@@ -116,11 +116,11 @@ export class ProgressAgent extends Agent<Env, AgentState> {
       answer = fakeAnswer(ctx, prompt);
     } else {
       try {
-        const run = this.env.AI.run as (m: string, i: unknown) => Promise<unknown>;
-        const out = (await run(model, {
-          messages,
-          max_tokens: MAX_OUTPUT_TOKENS,
-        })) as { response?: string };
+        // Call `.run` as a method on the AI binding — it relies on `this`.
+        const ai = this.env.AI as {
+          run: (m: string, i: unknown) => Promise<{ response?: string }>;
+        };
+        const out = await ai.run(model, { messages, max_tokens: MAX_OUTPUT_TOKENS });
         answer = (out?.response ?? "").trim();
         if (!answer) return { error: "model returned no text", code: "agent_error" };
       } catch (err) {
