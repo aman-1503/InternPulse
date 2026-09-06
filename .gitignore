@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# Cloudflare / Wrangler local state
+.wrangler/
+.mf/
+
+# local secrets & env
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+
+# misc
+*.local
+.DS_Store
+*.log

@@ -1,0 +1,56 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "internpulse",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // Workers AI is the inference layer for the Progress Agent (Phase 3).
+  // No local emulation: `wrangler dev` proxies this to real Workers AI and needs
+  // `wrangler login` / CLOUDFLARE_API_TOKEN. Set AGENT_FAKE_AI=1 in .dev.vars to
+  // run the agent fully offline with a deterministic, context-grounded stub.
+  "ai": { "binding": "AI" },
+
+  "vars": {
+    // Overridable Workers AI model id for the Progress Agent.
+    "PROGRESS_AGENT_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
+    // "1" => skip real inference, return a deterministic grounded stub.
+    // Real value belongs in .dev.vars (gitignored); this default keeps it typed.
+    "AGENT_FAKE_AI": ""
+  },
+
+  // React SPA is built to dist/client and served by the Workers assets runtime.
+  // Unknown paths fall back to index.html so client-side routing works later.
+  "assets": {
+    "not_found_handling": "single-page-application"
+  },
+
+  // One Durable Object instance per internship/project workspace.
+  // Routed by `idFromName(workspaceId)` in the Worker, so workspace-123 always
+  // maps to the same DO. SQLite-backed (see migrations below).
+  // One WorkspaceDO per workspace (authoritative state) + one ProgressAgent per
+  // workspace (stateful AI, Agents SDK). Both keyed by the workspace id.
+  "durable_objects": {
+    "bindings": [
+      { "name": "WORKSPACE_DO", "class_name": "WorkspaceDO" },
+      { "name": "PROGRESS_AGENT", "class_name": "ProgressAgent" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["WorkspaceDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["ProgressAgent"] }
+  ],
+
+  // Organization-wide relational data (users, teams, workspaces, memberships).
+  // database_id is a placeholder for local dev; replace when a real D1 database
+  // is provisioned with `wrangler d1 create internpulse`.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "internpulse",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

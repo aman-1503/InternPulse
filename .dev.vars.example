@@ -1,0 +1,16 @@
+# Copy to `.dev.vars` for local development. `.dev.vars` is gitignored.
+#
+# --- Phase 3: Progress Agent / Workers AI ---
+#
+# Workers AI has no offline local runtime. `wrangler dev` proxies env.AI to the
+# real Workers AI service, which needs auth: run `wrangler login` once, or set
+# CLOUDFLARE_API_TOKEN. The free plan includes 10,000 Neurons/day.
+#
+# To develop the agent WITHOUT Cloudflare credentials, set this to 1: the agent
+# then returns a deterministic answer built from the real (authoritative)
+# workspace context instead of calling a model. Everything except the LLM
+# phrasing is still exercised (context fetch, role-awareness, auth, persistence).
+AGENT_FAKE_AI=1
+
+# Optional: override the Workers AI model id (default set in wrangler.jsonc).
+# PROGRESS_AGENT_MODEL="@cf/meta/llama-3.1-8b-instruct-fast"
