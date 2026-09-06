@@ -4,10 +4,11 @@ A realtime internship/project progress platform where interns, mentors, and
 managers share one continuously updated workspace instead of maintaining
 separate status documents.
 
-> **Status: Phase 3 — stateful Progress Agent.** Everything from Phase 2 plus a
-> Cloudflare Agents SDK agent per workspace that answers questions grounded in
-> current workspace state, using Workers AI. Still no Vectorize/RAG, no
-> Workflows/Queues, no R2, no notifications.
+> **Status: Phase 4A — RAG over workspace history.** Everything from Phase 3 plus
+> long-term semantic memory: a Queue indexes UPDATE / BLOCKER / FEEDBACK records
+> into Vectorize, and the Progress Agent retrieves relevant history at question
+> time. Vectorize is **retrieval only** — WorkspaceDO SQLite stays the single
+> source of truth. Still no R2, no Workflows/reminders, no agent mutations.
 
 ## Architecture
 
@@ -18,12 +19,15 @@ React (Vite SPA)
 Cloudflare Worker  ──────────────►  D1  (users, teams, workspaces, memberships/roles)
    │  authorization boundary: resolves (workspaceId, userId) → role  [ONE boundary for all routes]
    │  idFromName(workspaceId) / getAgentByName(PROGRESS_AGENT, workspaceId)
-   ▼
+   │  queue() consumer  ◄── HISTORY_QUEUE ◄── WorkspaceDO enqueues {workspaceId,entityType,entityId}
+   ▼                          │  re-reads entity from WorkspaceDO → embed → upsert
 Workspace Durable Object  ◄─── DO-to-DO RPC ───  ProgressAgent  (Agents SDK, one per workspace)
-   │  (exactly one per workspace)   getAgentContext(role)   │  reads a BOUNDED projection per question
-   ├─ DO SQLite  (tasks, blockers, updates, …)  ← the ONLY  │  ├─ Agent SQLite: conversation turns only
-   │                                              source of  │  └─ Workers AI (@cf/meta/llama-3.1-8b-instruct-fast)
-   └─ WebSockets (Hibernation API)                truth      │     or a deterministic offline stub
+   │  (one per workspace)   getAgentContext / getIndexableEntity  │  per question:
+   ├─ DO SQLite  (tasks, blockers, updates, …)  ← the ONLY       │   1. getAgentContext (current, primary)
+   │                                              source of      │   2. Vectorize.query scoped to workspace
+   └─ WebSockets (Hibernation API)                truth          │   3. Workers AI chat  (current state wins conflicts)
+                                                                 └─ Agent SQLite: conversation turns only
+Vectorize  (internpulse-history, 768-dim cosine)  ← retrieval index ONLY, never source of truth
 ```
 
 **Data responsibility** (never duplicated across the two stores):
@@ -33,6 +37,7 @@ Workspace Durable Object  ◄─── DO-to-DO RPC ───  ProgressAgent  (A
 | **D1** | Organization-wide relational data: users, teams, workspaces, memberships + role. |
 | **DO SQLite** | Everything workspace-local: `tasks`, `blockers`, `updates`, `feedback`, `activity`, `workspace_meta`, `processed_requests`. |
 | **Agent SQLite** | Only Progress Agent conversation turns (`conversations`) + tiny SDK state. **No** task/blocker/update data. |
+| **Vectorize** | Embeddings + minimal metadata (`workspaceId`, `entityType`, `entityId`, `authorId?`, `createdAt`, `status?`, ≤240-char `snippet`) for UPDATE/BLOCKER/FEEDBACK. Retrieval only. Rebuildable from DO SQLite. |
 | Presence | Ephemeral only — lives on hibernatable sockets, never persisted. |
 
 The **manager overview** joins the two at read time: it lists workspaces from D1
@@ -80,6 +85,37 @@ The agent's inference layer is **Cloudflare Workers AI** (`env.AI`), which has
 No secrets are committed. `.dev.vars` is gitignored; `.dev.vars.example` holds
 only placeholder names.
 
+### RAG / Vectorize history (Phase 4A)
+
+A mutation to an **UPDATE / BLOCKER / FEEDBACK** enqueues a compact
+`{workspaceId, entityType, entityId}` event on `HISTORY_QUEUE` (never the record
+itself). The `queue()` consumer re-reads the current entity from WorkspaceDO,
+embeds it with **`@cf/baai/bge-base-en-v1.5` (768-dim)**, and upserts it into the
+**`internpulse-history`** Vectorize index under `namespace = workspaceId`. On each
+agent question, retrieval is scoped by both `namespace` and a `workspaceId`
+metadata filter, `topK` 4, min score 0.35. Retrieved history is a clearly
+separated, secondary prompt section — **current WorkspaceDO state wins any
+conflict** (a resolved blocker is never reported as open).
+
+- **Queues** run fully locally in `wrangler dev` (no provisioning). For
+  `wrangler deploy`: `wrangler queues create internpulse-history-index`.
+- **Vectorize has no local emulation** — the binding is `"remote": true`, so
+  `wrangler dev` uses the real index and needs `wrangler login`. One-time setup:
+
+  ```bash
+  wrangler vectorize create internpulse-history --dimensions=768 --metric=cosine
+  wrangler vectorize create-metadata-index internpulse-history --property-name=workspaceId --type=string
+  wrangler vectorize create-metadata-index internpulse-history --property-name=entityType --type=string
+  ```
+
+- **Offline (`AGENT_FAKE_AI=1`):** the consumer no-ops and the agent skips
+  retrieval (`retrievedHistory: 0`) — build, CI and offline dev need no
+  Cloudflare account. The producer → consumer path still runs.
+- The index is a retrieval cache: `rm -rf .wrangler/state` resets DO state, and
+  stale vectors are overwritten (deterministic ids) or cleaned up when their
+  entity is gone. To wipe it entirely: `wrangler vectorize delete internpulse-history`
+  then recreate.
+
 ### Scripts
 
 | Script | Purpose |
@@ -117,7 +153,7 @@ identity provider replaces later; nothing downstream changes.
 | `GET` | `/api/workspace/:id/snapshot` | Authoritative snapshot as JSON (debug/testing). |
 | `GET` | `/api/workspace/:id/summary` | `{activeTasks, openBlockers, latestUpdate}` (used by overview). |
 | `GET` | `/api/workspace/:id/agent` | This user's Progress Agent conversation history. |
-| `POST` | `/api/workspace/:id/agent` | Ask the Progress Agent (`{prompt}`) — response grounded in current state. |
+| `POST` | `/api/workspace/:id/agent` | Ask the Progress Agent (`{prompt}`) — grounded in current state + retrieved history. Response includes `groundedOn` (current-state counts + `retrievedHistory`) and `retrieved[]` (metadata only, no vectors). |
 
 Agent routes go through the **same `resolveRole` boundary** as every other
 workspace route: no resolvable role → `403`.
@@ -151,15 +187,17 @@ src/worker/index.ts               Routes, authorization boundary, overview fan-o
 src/worker/workspace-do.ts        WorkspaceDO: transport, validation, broadcast, snapshot, getAgentContext RPC
 src/worker/workspace-store.ts     DO SQLite schema + migration + typed CRUD (no ORM)
 src/worker/permissions.ts         Role matrix
-src/worker/progress-agent.ts      ProgressAgent (Agents SDK): context fetch, inference, conversation store
-src/worker/agent-context.ts       Pure: bounded state projection + prompt building + offline stub
+src/worker/progress-agent.ts      ProgressAgent (Agents SDK): context fetch, RAG retrieval, inference, conversation store
+src/worker/agent-context.ts       Pure: bounded state projection + prompt building (+ history section) + offline stub
+src/worker/history-index.ts       Pure: entity→text, vector id, metadata shape, history-block rendering
+src/worker/queue-consumer.ts      HISTORY_QUEUE consumer: re-read entity → embed → Vectorize upsert/delete
 src/client/                       React SPA: identity, useWorkspace hook, components/, tabs/ (incl. AgentTab), board/
 ```
 
-## Deliberately deferred (Phase 4+)
+## Deliberately deferred (post-4A)
 
-Vectorize / RAG over historical updates & feedback, Cloudflare Workflows &
-Queues, automated reminders / blocker escalation / weekly-report approval, R2
-uploads, notifications (Slack/email/calendar), agent-triggered actions, analytics
-/ scoring, real authentication, comments, and reorder-within-column / touch /
-keyboard drag-and-drop.
+Cloudflare Workflows (weekly-review, mentor-approval), automated reminders /
+blocker escalation, R2 uploads + document indexing, notifications
+(Slack/email/calendar), agent-triggered actions, analytics / scoring, real
+authentication, comments, task/activity indexing, retrieval re-ranking, and
+reorder-within-column / touch / keyboard drag-and-drop.

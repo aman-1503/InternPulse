@@ -6,11 +6,14 @@
 # real Workers AI service, which needs auth: run `wrangler login` once, or set
 # CLOUDFLARE_API_TOKEN. The free plan includes 10,000 Neurons/day.
 #
-# To develop the agent WITHOUT Cloudflare credentials, set this to 1: the agent
-# then returns a deterministic answer built from the real (authoritative)
-# workspace context instead of calling a model. Everything except the LLM
-# phrasing is still exercised (context fetch, role-awareness, auth, persistence).
+# To develop WITHOUT Cloudflare credentials, set this to 1:
+#   - the agent returns a deterministic answer from the real workspace context
+#     instead of calling a model
+#   - RAG retrieval is skipped (retrievedHistory: 0)
+#   - the history-index queue consumer no-ops (producer -> consumer wiring still runs)
+# Set to 0 (needs `wrangler login`) to use the real model + real Vectorize index.
 AGENT_FAKE_AI=1
 
-# Optional: override the Workers AI model id (default set in wrangler.jsonc).
+# Optional: override the Workers AI model ids (defaults set in wrangler.jsonc).
 # PROGRESS_AGENT_MODEL="@cf/meta/llama-3.1-8b-instruct-fast"
+# HISTORY_EMBED_MODEL="@cf/baai/bge-base-en-v1.5"   # 768-dim; must match the Vectorize index

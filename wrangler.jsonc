@@ -15,9 +15,38 @@
   "vars": {
     // Overridable Workers AI model id for the Progress Agent.
     "PROGRESS_AGENT_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
-    // "1" => skip real inference, return a deterministic grounded stub.
+    // "1" => skip real inference AND skip RAG (Vectorize). The agent returns a
+    // deterministic grounded stub and the history-index queue consumer no-ops.
     // Real value belongs in .dev.vars (gitignored); this default keeps it typed.
-    "AGENT_FAKE_AI": ""
+    "AGENT_FAKE_AI": "",
+    // Workers AI embedding model for the Phase 4A history index. Its output
+    // dimension (768) is locked into the Vectorize index at creation time.
+    "HISTORY_EMBED_MODEL": "@cf/baai/bge-base-en-v1.5"
+  },
+
+  // Phase 4A: long-term retrieval memory. Vectorize is retrieval ONLY, never a
+  // source of truth. `remote: true` because Vectorize has no local emulation —
+  // `wrangler dev` talks to the real index over your `wrangler login`.
+  "vectorize": [
+    { "binding": "VECTORIZE", "index_name": "internpulse-history", "remote": true }
+  ],
+
+  // A mutation to an UPDATE / BLOCKER / FEEDBACK enqueues a compact reference
+  // event; the consumer re-reads the authoritative entity from WorkspaceDO,
+  // embeds it, and upserts into Vectorize. Queues run fully locally in
+  // `wrangler dev` (no provisioning needed until `wrangler deploy`).
+  "queues": {
+    "producers": [
+      { "binding": "HISTORY_QUEUE", "queue": "internpulse-history-index" }
+    ],
+    "consumers": [
+      {
+        "queue": "internpulse-history-index",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3
+      }
+    ]
   },
 
   // React SPA is built to dist/client and served by the Workers assets runtime.

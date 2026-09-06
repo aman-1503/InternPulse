@@ -16,9 +16,11 @@ import type {
   Feedback,
   ProgressUpdate,
   ActivityEntry,
+  RetrievedHistoryItem,
   Role,
   Task,
 } from "../shared/protocol";
+import { renderHistoryBlock } from "./history-index";
 
 // Bounds — keep the model input small and the cost predictable.
 const LIMITS = {
@@ -108,7 +110,7 @@ export function projectAgentContext(input: {
   };
 }
 
-export function groundedOn(ctx: AgentContext): AgentGroundedOn {
+export function groundedOn(ctx: AgentContext, retrievedHistory = 0): AgentGroundedOn {
   return {
     activeTasks: ctx.tasks.length + ctx.truncatedTasks,
     doneTasks: ctx.doneTaskCount,
@@ -117,6 +119,7 @@ export function groundedOn(ctx: AgentContext): AgentGroundedOn {
     feedback: ctx.recentFeedback.length,
     activity: ctx.recentActivity.length,
     contextGeneratedAt: ctx.generatedAt,
+    retrievedHistory,
   };
 }
 
@@ -189,6 +192,7 @@ export function buildMessages(
   ctx: AgentContext,
   userPrompt: string,
   history: AgentTurn[],
+  retrieved: RetrievedHistoryItem[] = [],
 ): Array<{ role: "system" | "user" | "assistant"; content: string }> {
   const roleKey = ctx.requester.role ?? "observer";
   const system = [
@@ -197,11 +201,15 @@ export function buildMessages(
     "Never invent tasks, blockers, updates, feedback, names, dates, or numbers.",
     "You cannot change anything: never claim you created, moved, completed, deleted, assigned, resolved, escalated, notified, or reported. You may SUGGEST such actions for a human to take.",
     "Do not produce performance ratings, rankings, or sentiment scores.",
+    "The HISTORICAL CONTEXT section is older background retrieved by search. It may be stale. The WORKSPACE STATE section is authoritative and always wins a conflict — e.g. never call a blocker currently open if the current state does not list it as open.",
     "Be concise: a short paragraph or a few bullet points.",
     ROLE_FRAMING[roleKey],
     "",
     "WORKSPACE STATE (authoritative, generated just now):",
     renderContextBlock(ctx),
+    "",
+    "HISTORICAL CONTEXT (retrieved by semantic search — older background, may be outdated):",
+    renderHistoryBlock(retrieved, ctx.generatedAt),
   ].join("\n");
 
   const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [

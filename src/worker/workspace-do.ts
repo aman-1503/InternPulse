@@ -17,14 +17,21 @@ import {
 } from "../shared/protocol";
 import { canMutate } from "./permissions";
 import { projectAgentContext } from "./agent-context";
+import { blockerText, feedbackText, updateText } from "./history-index";
 import { WorkspaceStore } from "./workspace-store";
-import type { AgentContext } from "../shared/protocol";
+import type {
+  AgentContext,
+  HistoryIndexEvent,
+  IndexableEntity,
+  IndexableEntityType,
+} from "../shared/protocol";
 
-/** Per-connection identity + role. Stored on the hibernatable socket. */
+/** Per-connection identity + role + workspace. Stored on the hibernatable socket. */
 interface SocketAttachment {
   userId: string;
   displayName: string;
   role: Role | null;
+  workspaceId: string;
 }
 
 const MAX = {
@@ -105,6 +112,57 @@ export class WorkspaceDO extends DurableObject<Env> {
     });
   }
 
+  /**
+   * Phase 4A: current authoritative text + minimal metadata for one indexable
+   * entity, re-read fresh so the history index never embeds stale data. Returns
+   * `null` if the entity was deleted or is otherwise not indexable — the queue
+   * consumer then removes any stale vector rather than inventing data.
+   */
+  async getIndexableEntity(
+    workspaceId: string,
+    entityType: IndexableEntityType,
+    entityId: string,
+  ): Promise<IndexableEntity | null> {
+    if (entityType === "UPDATE") {
+      const id = Number(entityId);
+      const u = Number.isFinite(id) ? this.store.getUpdate(id) : null;
+      if (!u) return null;
+      return {
+        workspaceId,
+        entityType,
+        entityId,
+        text: updateText(u),
+        authorId: u.authorId,
+        createdAt: u.createdAt,
+        status: u.type,
+      };
+    }
+    if (entityType === "BLOCKER") {
+      const b = this.store.getBlocker(entityId);
+      if (!b) return null;
+      return {
+        workspaceId,
+        entityType,
+        entityId,
+        text: blockerText(b),
+        authorId: b.createdBy,
+        createdAt: b.createdAt,
+        status: b.status,
+      };
+    }
+    const f = this.store.getFeedback(entityId);
+    if (!f) return null;
+    return {
+      workspaceId,
+      entityType,
+      entityId,
+      text: feedbackText(f),
+      authorId: f.authorId,
+      createdAt: f.createdAt,
+      status: null,
+    };
+  }
+
   // -- WebSocket lifecycle (Hibernation API) --------------------------
 
   private handleWebSocketUpgrade(url: URL): Response {
@@ -120,7 +178,7 @@ export class WorkspaceDO extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  override webSocketMessage(ws: WebSocket, raw: ArrayBuffer | string): void {
+  override async webSocketMessage(ws: WebSocket, raw: ArrayBuffer | string): Promise<void> {
     let msg: ClientMessage;
     try {
       const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
@@ -168,6 +226,10 @@ export class WorkspaceDO extends DurableObject<Env> {
       this.store.markProcessed(requestId);
       for (const ev of events) this.broadcast(ev);
       this.sendTo(ws, { type: "ack", requestId });
+      // Phase 4A: enqueue compact history-index events. Best-effort — the
+      // authoritative record is already persisted; Vectorize is not source of
+      // truth, so a failed enqueue never fails the mutation.
+      await this.enqueueHistoryIndex(who.workspaceId, events);
     } catch (err) {
       if (err instanceof AppError) {
         this.sendTo(ws, { type: "error", code: err.code, requestId, message: err.message });
@@ -175,6 +237,30 @@ export class WorkspaceDO extends DurableObject<Env> {
         console.error("workspace mutation failed", err);
         this.sendTo(ws, { type: "error", code: "internal", requestId, message: "internal error" });
       }
+    }
+  }
+
+  /** Map broadcast events to `history.index` queue messages (UPDATE/BLOCKER/FEEDBACK only). */
+  private async enqueueHistoryIndex(
+    workspaceId: string,
+    events: ServerMessage[],
+  ): Promise<void> {
+    if (!this.env.HISTORY_QUEUE || !workspaceId) return;
+    const msgs: HistoryIndexEvent[] = [];
+    for (const ev of events) {
+      if (ev.type === "update.created") {
+        msgs.push({ workspaceId, entityType: "UPDATE", entityId: String(ev.update.id) });
+      } else if (ev.type === "blocker.created" || ev.type === "blocker.resolved") {
+        msgs.push({ workspaceId, entityType: "BLOCKER", entityId: ev.blocker.id });
+      } else if (ev.type === "feedback.created") {
+        msgs.push({ workspaceId, entityType: "FEEDBACK", entityId: ev.feedback.id });
+      }
+    }
+    if (msgs.length === 0) return;
+    try {
+      await Promise.all(msgs.map((m) => this.env.HISTORY_QUEUE.send(m)));
+    } catch (err) {
+      console.error("history-index enqueue failed (non-fatal)", err);
     }
   }
 
@@ -372,7 +458,7 @@ export class WorkspaceDO extends DurableObject<Env> {
     const rawRole = p.get("_role");
     const role: Role | null =
       rawRole === "intern" || rawRole === "mentor" || rawRole === "manager" ? rawRole : null;
-    return { userId, displayName, role };
+    return { userId, displayName, role, workspaceId: workspaceIdFrom(url) };
   }
 
   private liveSockets(): WebSocket[] {
@@ -385,6 +471,7 @@ export class WorkspaceDO extends DurableObject<Env> {
         userId: "unknown",
         displayName: "Unknown",
         role: null,
+        workspaceId: "",
       }
     );
   }

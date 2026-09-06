@@ -143,8 +143,9 @@ export function AgentTab({
         <p className="meta agent-grounded">
           grounded on {meta.grounded.activeTasks} active / {meta.grounded.doneTasks} done tasks ·{" "}
           {meta.grounded.openBlockers} open blockers · {meta.grounded.updates} updates ·{" "}
-          {meta.grounded.feedback} feedback · state {timeAgo(meta.grounded.contextGeneratedAt)} · model{" "}
-          <code>{meta.model}</code>
+          {meta.grounded.feedback} feedback · {meta.grounded.retrievedHistory} historical item
+          {meta.grounded.retrievedHistory === 1 ? "" : "s"} · state{" "}
+          {timeAgo(meta.grounded.contextGeneratedAt)} · model <code>{meta.model}</code>
           {meta.fake && " (offline stub)"}
         </p>
       )}

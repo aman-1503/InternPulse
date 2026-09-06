@@ -353,6 +353,11 @@ export class WorkspaceStore {
     return row ? toUpdate(row) : null;
   }
 
+  getUpdate(id: number): ProgressUpdate | null {
+    const row = this.sql.exec("SELECT * FROM updates WHERE id = ?", id).toArray()[0];
+    return row ? toUpdate(row) : null;
+  }
+
   // -- feedback ------------------------------------------------
 
   listFeedback(limit = DEFAULT_FEED_LIMIT): Feedback[] {
@@ -360,6 +365,11 @@ export class WorkspaceStore {
       .exec("SELECT * FROM feedback ORDER BY created_at DESC LIMIT ?", limit)
       .toArray()
       .map(toFeedback);
+  }
+
+  getFeedback(id: string): Feedback | null {
+    const row = this.sql.exec("SELECT * FROM feedback WHERE id = ?", id).toArray()[0];
+    return row ? toFeedback(row) : null;
   }
 
   createFeedback(input: {

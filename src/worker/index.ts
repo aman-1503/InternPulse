@@ -1,8 +1,10 @@
 import { getAgentByName } from "agents";
 import { WorkspaceDO } from "./workspace-do";
 import { ProgressAgent } from "./progress-agent";
+import { handleHistoryIndexBatch } from "./queue-consumer";
 import type {
   HealthResponse,
+  HistoryIndexEvent,
   OverviewResponse,
   OverviewRow,
   Role,
@@ -242,4 +244,10 @@ export default {
     // Non-API paths are served by the Workers assets runtime (the React SPA).
     return new Response("Not found", { status: 404 });
   },
-} satisfies ExportedHandler<Env>;
+
+  // Phase 4A: history-index queue consumer (Vectorize upserts happen here, off
+  // the user mutation path).
+  async queue(batch, env): Promise<void> {
+    await handleHistoryIndexBatch(batch, env);
+  },
+} satisfies ExportedHandler<Env, HistoryIndexEvent>;

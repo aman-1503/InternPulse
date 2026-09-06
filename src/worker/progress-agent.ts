@@ -21,9 +21,11 @@ import {
   type AgentContext,
   type AgentErrorResponse,
   type AgentTurn,
+  type RetrievedHistoryItem,
   type Role,
 } from "../shared/protocol";
 import { buildMessages, fakeAnswer, groundedOn } from "./agent-context";
+import { MIN_SCORE, RETRIEVAL_TOP_K, toRetrievedItem } from "./history-index";
 
 const DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 const MAX_OUTPUT_TOKENS = 512;
@@ -104,13 +106,24 @@ export class ProgressAgent extends Agent<Env, AgentState> {
     `;
     const priorTurns = priorRows.map(toTurn).reverse();
 
-    // 3. Build grounded chat messages.
-    const messages = buildMessages(ctx, prompt, priorTurns);
-
-    // 4. Inference — real model, or deterministic offline stub.
     const model = this.env.PROGRESS_AGENT_MODEL || DEFAULT_MODEL;
     const useFake = String(this.env.AGENT_FAKE_AI ?? "") === "1" || !this.env.AI;
 
+    // 3. Phase 4A: semantic retrieval over workspace history (retrieval only —
+    //    scoped strictly to this workspace; current state above still wins).
+    let retrieved: RetrievedHistoryItem[] = [];
+    if (!useFake && this.env.VECTORIZE) {
+      try {
+        retrieved = await this.retrieveHistory(input.workspaceId, prompt);
+      } catch (err) {
+        console.error("history retrieval failed (non-fatal)", err);
+      }
+    }
+
+    // 4. Build grounded chat messages (current context primary, history secondary).
+    const messages = buildMessages(ctx, prompt, priorTurns, retrieved);
+
+    // 5. Inference — real model, or deterministic offline stub.
     let answer: string;
     if (useFake) {
       answer = fakeAnswer(ctx, prompt);
@@ -129,7 +142,7 @@ export class ProgressAgent extends Agent<Env, AgentState> {
       }
     }
 
-    // 5. Persist the turn (lightweight; not workspace business data).
+    // 6. Persist the turn (lightweight; not workspace business data).
     const id = crypto.randomUUID();
     const createdAt = Date.now();
     this.sql`
@@ -147,9 +160,41 @@ export class ProgressAgent extends Agent<Env, AgentState> {
       model: useFake ? "fake-ai" : model,
       usedFakeAI: useFake,
       role: input.role,
-      groundedOn: groundedOn(ctx),
+      groundedOn: groundedOn(ctx, retrieved.length),
+      retrieved,
       conversationId: id,
     };
+  }
+
+  /**
+   * Semantic retrieval over this workspace's history. Strictly scoped by
+   * namespace AND metadata filter. Returns only a small, relevant set.
+   */
+  private async retrieveHistory(
+    workspaceId: string,
+    prompt: string,
+  ): Promise<RetrievedHistoryItem[]> {
+    const ai = this.env.AI as unknown as {
+      run: (m: string, i: { text: string }) => Promise<{ data?: number[][] }>;
+    };
+    const embed = await ai.run(this.env.HISTORY_EMBED_MODEL, { text: prompt });
+    const vector = embed?.data?.[0];
+    if (!vector || vector.length === 0) return [];
+
+    const res = await this.env.VECTORIZE.query(vector, {
+      topK: RETRIEVAL_TOP_K,
+      namespace: workspaceId,
+      filter: { workspaceId },
+      returnMetadata: "all",
+    });
+
+    const items: RetrievedHistoryItem[] = [];
+    for (const match of res.matches ?? []) {
+      if (typeof match.score === "number" && match.score < MIN_SCORE) continue;
+      const item = toRetrievedItem(match);
+      if (item && item.entityId) items.push(item);
+    }
+    return items;
   }
 }
 

@@ -227,6 +227,18 @@ export interface AgentGroundedOn {
   feedback: number;
   activity: number;
   contextGeneratedAt: number;
+  /** Phase 4A: number of historical records retrieved from Vectorize for this answer. */
+  retrievedHistory: number;
+}
+
+/** One record returned by semantic retrieval. Internal/debug — no vectors exposed. */
+export interface RetrievedHistoryItem {
+  entityType: IndexableEntityType;
+  entityId: string;
+  score: number;
+  createdAt: number;
+  status: string | null;
+  snippet: string;
 }
 
 export interface AgentAskResponse {
@@ -235,7 +247,42 @@ export interface AgentAskResponse {
   usedFakeAI: boolean;
   role: Role | null;
   groundedOn: AgentGroundedOn;
+  /** What semantic retrieval surfaced (metadata only; never vector values). */
+  retrieved: RetrievedHistoryItem[];
   conversationId: string;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4A: history indexing (Vectorize is retrieval only, never source of truth)
+// ---------------------------------------------------------------------------
+
+export type IndexableEntityType = "UPDATE" | "BLOCKER" | "FEEDBACK";
+export const INDEXABLE_ENTITY_TYPES: readonly IndexableEntityType[] = [
+  "UPDATE",
+  "BLOCKER",
+  "FEEDBACK",
+];
+
+/** Compact reference event on the history-index queue. Never carries the record. */
+export interface HistoryIndexEvent {
+  workspaceId: string;
+  entityType: IndexableEntityType;
+  entityId: string;
+}
+
+/**
+ * What WorkspaceDO returns for a history-index request: the current authoritative
+ * text to embed plus minimal metadata. `null` when the entity no longer exists
+ * or is not indexable — the consumer then removes any stale vector.
+ */
+export interface IndexableEntity {
+  workspaceId: string;
+  entityType: IndexableEntityType;
+  entityId: string;
+  text: string;
+  authorId: string | null;
+  createdAt: number;
+  status: string | null;
 }
 
 export interface AgentTurn {
