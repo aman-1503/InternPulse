@@ -1,262 +1,303 @@
 # InternPulse
 
-A realtime internship/project progress platform where interns, mentors, and
-managers share one continuously updated workspace instead of maintaining
-separate status documents.
+**One realtime workspace for internship & project progress — shared by intern, mentor, and manager.**
 
-> **Status: Phase 4B — Workflows: reminders, escalation, weekly review.**
-> Everything from Phase 4A plus two durable Cloudflare Workflows: a blocker
-> reminder/escalation flow (started when a blocker is created) and a
-> human-in-the-loop weekly progress review (draft → intern submit → mentor
-> approve/request-changes → manager view). In-app reminders only. The agent
-> drafts wording but never mutates workspace state. Still no R2, no Slack/email,
-> no cron triggers.
+Live demo: **https://internpulse.amanprabhune.workers.dev**
+
+---
+
+## The problem
+
+Internship and project progress ends up scattered across Google Docs, shared
+folders, task trackers, DM threads, mentor notes, and status updates. The intern
+maintains one version, the mentor another, the manager a third. Nobody is looking
+at the same thing, and "what's actually going on" takes a meeting to answer.
+
+## The solution
+
+A single, continuously-updated workspace that is the source of truth for one
+internship/project:
+
+- **current work** (a task board), **daily progress updates**, **blockers**,
+  **mentor feedback**, and an **activity timeline** — all realtime, all shared.
+- a **manager overview** across projects.
+- durable **workflows** for the slow, human-in-the-loop parts: blocker
+  reminders/escalation and a weekly progress review with mentor approval.
+- a **stateful Progress Agent** per workspace that answers questions grounded in
+  the *current* authoritative state, plus retrieved history and uploaded
+  documents — never a generic chatbot, never a second source of truth.
+
+InternPulse is **not** a generic project-management tool. Every surface is about
+intern progress, mentor guidance, and manager visibility.
+
+---
 
 ## Architecture
 
 ```
-React (Vite SPA)
-   │  HTTP for bootstrap/overview/agent, WebSocket for realtime collaboration
-   ▼
-Cloudflare Worker  ──────────────►  D1  (users, teams, workspaces, memberships/roles)
-   │  authorization boundary: resolves (workspaceId, userId) → role  [ONE boundary for all routes]
-   │  idFromName(workspaceId) / getAgentByName(PROGRESS_AGENT, workspaceId)
-   │  queue() consumer  ◄── HISTORY_QUEUE ◄── WorkspaceDO enqueues {workspaceId,entityType,entityId}
-   ▼                          │  re-reads entity from WorkspaceDO → embed → upsert
-Workspace Durable Object  ◄─── DO-to-DO RPC ───  ProgressAgent  (Agents SDK, one per workspace)
-   │  (one per workspace)   getAgentContext / getIndexableEntity  │  per question:
-   ├─ DO SQLite  (tasks, blockers, updates, …)  ← the ONLY       │   1. getAgentContext (current, primary)
-   │                                              source of      │   2. Vectorize.query scoped to workspace
-   └─ WebSockets (Hibernation API)                truth          │   3. Workers AI chat  (current state wins conflicts)
-                                                                 └─ Agent SQLite: conversation turns only
-Vectorize  (internpulse-history, 768-dim cosine)  ← retrieval index ONLY, never source of truth
-
-Phase 4B:
-  blocker.created ─► WORKFLOW_QUEUE ─► queue() ─► BLOCKER_WORKFLOW.create(id: blocker-<id>)
-       BlockerWorkflow: sleep → re-read blocker from DO → reminders (intern+mentor) → sleep → re-read → escalate (manager)
-  "Start weekly review" (HTTP) ─► WEEKLY_WORKFLOW.create(id: weekly-<reportId>)
-       WeeklyReviewWorkflow: agent draft → waitForEvent(submit) → waitForEvent(review) → APPROVE | REQUEST_CHANGES↺
-  Human actions (submit / review) ─► HTTP route ─► instance.sendEvent(...)   (no HTTP request held open)
-  reminders + weekly_reports live in DO SQLite; Workflows only advance the lifecycle.
+                         React + TypeScript + Vite  (SPA, served by the Worker)
+                                        │
+                                        ▼
+                             Cloudflare Worker  ── one HTTP + WebSocket entrypoint
+                                        │
+     ┌──────────────┬───────────────────┼───────────────────┬──────────────┬──────────────┐
+     ▼              ▼                   ▼                   ▼              ▼              ▼
+   D1          Workspace DO        ProgressAgent DO      Vectorize       Queues       Workflows
+ (org data)   (per workspace)      (per workspace,      (RAG index:   (async         (durable,
+  users        DO SQLite  ─────►    Agents SDK)          history +     handoff:       human-in-loop)
+  teams        tasks/blockers/      current-state RPC    documents)    indexing,      • BlockerWorkflow
+  workspaces   updates/feedback/    + retrieval          scoped by     workflow       • WeeklyReviewWorkflow
+  memberships  activity/reminders/  + Workers AI          workspace    starts)
+  + role       weekly_reports/                                │
+               attachments(meta)    Workers AI  ◄────────────┘
+                    │               (@cf/meta/llama-3.1-8b-instruct-fast,
+                    ▼                @cf/baai/bge-base-en-v1.5 embeddings,
+              WebSockets              env.AI.toMarkdown for documents)
+              (Hibernation API)              │
+                    │                        ▼
+            intern / mentor / manager      R2 (internpulse-attachments)
+                                           original uploaded files ONLY
 ```
 
-**Data responsibility** (never duplicated across the two stores):
+### Why each Cloudflare primitive is here
 
-| Store | Owns |
-|-------|------|
-| **D1** | Organization-wide relational data: users, teams, workspaces, memberships + role. |
-| **DO SQLite** | Everything workspace-local: `tasks`, `blockers`, `updates`, `feedback`, `activity`, `workspace_meta`, `processed_requests`. |
-| **Agent SQLite** | Only Progress Agent conversation turns (`conversations`) + tiny SDK state. **No** task/blocker/update data. |
-| **Vectorize** | Embeddings + minimal metadata (`workspaceId`, `entityType`, `entityId`, `authorId?`, `createdAt`, `status?`, ≤240-char `snippet`) for UPDATE/BLOCKER/FEEDBACK. Retrieval only. Rebuildable from DO SQLite. |
-| Presence | Ephemeral only — lives on hibernatable sockets, never persisted. |
+| Primitive | Role in InternPulse | Why it fits |
+|---|---|---|
+| **Durable Objects** | One `WorkspaceDO` per internship/project — the authoritative, realtime coordinator. All reads/writes to workspace state go through it. | A workspace needs a single consistent owner for realtime fan-out and last-write-wins ordering. `idFromName(workspaceId)` gives a stable instance. |
+| **DO SQLite** | Workspace-local persistence: tasks, blockers, updates, feedback, activity, reminders, weekly reports, attachment metadata, request-dedup. | Colocated with the coordinator → transactional, zero-latency reads while serving WebSockets. In-DO schema migrations (`schema_version`). |
+| **D1** | Organization-wide relational data only: users, teams, workspaces, memberships + role. | Cross-workspace, relational, queried by the manager overview and the auth boundary. Never holds workspace business state. |
+| **WebSockets + Hibernation** | Realtime sync of every workspace change; presence. | Hibernation keeps idle connections cheap; the DO replays an authoritative snapshot on every (re)connect so clients never reconstruct state from events. |
+| **Agents SDK + Workers AI** | `ProgressAgent` — one stateful agent per workspace. Reads a bounded projection of current state via DO-to-DO RPC, retrieves history/documents from Vectorize, answers with Workers AI. | Genuinely stateful (its own SQLite for conversation turns), workspace-scoped, and grounded. Read / reason / suggest / draft — never mutates. |
+| **Vectorize** | RAG index (`internpulse-history`, 768-dim cosine): historical UPDATE/BLOCKER/FEEDBACK records **and** chunks of uploaded documents, tagged with `workspaceId` + `entityType`. | Semantic recall of "what happened before" and "what did the docs say". Retrieval only — the vector store is rebuildable and never authoritative. |
+| **Queues** | Two async seams: (1) index a changed entity or uploaded document into Vectorize, off the mutation path; (2) start a `BlockerWorkflow` when a blocker is created, off the ack path. | Keeps the user-facing write fast; gives retries and decoupling. Nothing else is forced through a queue. |
+| **Workflows** | `BlockerWorkflow` (sleep → re-read blocker → remind → sleep → re-read → escalate) and `WeeklyReviewWorkflow` (draft → intern submit → mentor approve/request-changes loop). | Durable across days and restarts; `waitForEvent` for the human steps means no HTTP request is held open. Every step re-reads authoritative state — the payload carries only ids. |
+| **R2** | Original bytes of uploaded attachments, under `workspace/<id>/<attachmentId>/<file>`. | Object storage for files. Metadata stays in DO SQLite, searchable text in Vectorize; the bytes live only in R2. |
 
-The **manager overview** joins the two at read time: it lists workspaces from D1
-and fans out to each workspace DO's `GET /summary` for live counts. No
-workspace-local state is copied into D1.
+---
 
-## Requirements
+## Roles
 
-- **Node.js >= 22** (`.nvmrc` present → `nvm use`).
-- npm.
+Three roles, resolved once per request at **`resolveRole()`** in `src/worker/index.ts` — the single authorization seam.
 
-## Local development
+| Action | intern | mentor | manager | no membership |
+|---|:--:|:--:|:--:|:--:|
+| read workspace / snapshot / agent / overview | ✅ | ✅ | ✅ | ❌ (403) |
+| tasks: create / edit / move / delete | ✅ | ✅ | — | — |
+| post update · raise blocker · upload/delete attachment | ✅ | ✅ | — | — |
+| resolve blocker · add feedback | — | ✅ | — | — |
+| start weekly review · edit/submit own report | ✅ | ✅ (start only) | — | — |
+| review weekly report (approve / request changes) | — | ✅ | — | — |
+| view approved weekly report · view blocker escalations | ✅ | ✅ | ✅ | — |
+| acknowledge own reminders | ✅ | ✅ | ✅ | — |
+
+The Progress Agent is **read / reason / suggest / draft only** for all roles — it never completes tasks, resolves blockers, edits reports, or changes membership.
+
+---
+
+## Main product flows
+
+1. **Realtime workspace** — intern posts a daily update / creates a task / raises a blocker; mentor and manager see it instantly. Refresh → the DO snapshot restores exact state.
+2. **Blocker lifecycle** — blocker raised → after `BLOCKER_REMINDER_DELAY`, if still open, in-app reminders to intern + mentor → after `BLOCKER_ESCALATION_DELAY`, if still open, escalation to the manager. Resolving the blocker stops the workflow. Reminders dedupe (no spam).
+3. **Weekly progress review** — someone starts it → the agent drafts a report from current state + retrieved history/documents (or a clearly-marked deterministic draft if AI is down) → intern edits and submits → mentor approves or requests changes (loops up to `WEEKLY_MAX_ROUNDS`) → approved report is visible to the manager.
+4. **Ask the agent** — "What am I blocked on?", "What happened this week?", "What do the uploaded docs say about token rotation?" → grounded answer with a `groundedOn` panel (current-state counts + retrieved history + retrieved document chunks).
+5. **Manager overview** — cards for each project: name, intern, active task count, open blocker count, latest update; click through into the same shared workspace.
+6. **Attachments** — upload a spec/notes file → stored in R2, listed with size/type/uploader/time, downloadable, and (for text-bearing formats) chunked into Vectorize so the agent can cite it.
+
+---
+
+## Screenshots
+
+_No screenshots are checked in yet._ Placeholders — capture from the live demo:
+
+- `docs/screenshots/overview.png` — workspace Overview / Today
+- `docs/screenshots/board.png` — draggable board
+- `docs/screenshots/agent.png` — Progress Agent with grounding panel
+- `docs/screenshots/weekly.png` — weekly review lifecycle
+- `docs/screenshots/manager.png` — manager overview
+
+---
+
+## Local setup
+
+Requires **Node.js ≥ 22** (`.nvmrc` present) and npm.
 
 ```bash
 nvm use
 npm install
-cp .dev.vars.example .dev.vars   # keeps AGENT_FAKE_AI=1 → agent runs offline
-npm run cf-typegen               # regenerate worker-configuration.d.ts (after wrangler.jsonc edits)
-npm run db:migrate:local         # D1 schema
-npm run db:seed:local            # DEV/DEMO users + workspaces + memberships
-npm run dev                      # http://localhost:5173
+cp .dev.vars.example .dev.vars      # local config (gitignored)
+npm run cf-typegen                  # generate binding types
+npm run db:migrate:local            # D1 schema (simulated locally)
+npm run db:seed:local               # org data: Alice / Mia / Jordan + 2 projects
+npm run dev                         # http://localhost:5173
+npm run demo:seed                   # (in another shell, once dev is up) populate the demo workspace
 ```
 
-Open the app, use the **DEMO identity** switcher (top right) to become Alice
-(intern) / Mia (mentor) / Max (manager). Open the same workspace in a second
-window as a different identity to see realtime sync. The **Agent** tab answers
-questions about the workspace.
+Open the app → use the **demo identity switcher** (top-right) to become Alice
+Chen (intern), Mia Rivera (mentor), or Jordan Park (manager). Open the same
+workspace in a second browser to see realtime sync.
 
-### Progress Agent / Workers AI
+### Environment variables
 
-The agent's inference layer is **Cloudflare Workers AI** (`env.AI`), which has
-**no offline local runtime** — `wrangler dev` proxies it to the real service.
+`vars` live in `wrangler.jsonc` (safe defaults); secrets/overrides go in
+`.dev.vars` (gitignored) — see `.dev.vars.example`.
 
-- **Offline (default):** `.dev.vars` has `AGENT_FAKE_AI=1`. The agent fetches the
-  real authoritative workspace context and returns a **deterministic answer built
-  from it** — no model call. Grounding, role-awareness, freshness, auth and
-  persistence all work; only the LLM phrasing is stubbed.
-- **Real model:** run `wrangler login` (or export `CLOUDFLARE_API_TOKEN`), set
-  `AGENT_FAKE_AI=0` in `.dev.vars`, restart `npm run dev`. Uses
-  `@cf/meta/llama-3.1-8b-instruct-fast` (override with `PROGRESS_AGENT_MODEL`).
-  Workers AI free allocation is 10,000 Neurons/day. If the service is
-  unreachable the agent returns a clean `ai_unavailable` error — it never
-  fabricates an answer.
+| Var | Default | Purpose |
+|---|---|---|
+| `PROGRESS_AGENT_MODEL` | `@cf/meta/llama-3.1-8b-instruct-fast` | Progress Agent chat model |
+| `HISTORY_EMBED_MODEL` | `@cf/baai/bge-base-en-v1.5` | Embedding model (768-dim — **must match the Vectorize index**) |
+| `AGENT_FAKE_AI` | `""` | `"1"` → offline: agent returns a deterministic grounded stub, RAG + doc indexing no-op, workflows use templated text. Lets the whole app build/test with no Cloudflare account. |
+| `BLOCKER_REMINDER_DELAY` | `1 hour` | Blocker workflow: wait before the reminder (`"<n> seconds\|minutes\|hours\|days"`) |
+| `BLOCKER_ESCALATION_DELAY` | `1 day` | Blocker workflow: wait before the manager escalation |
+| `WEEKLY_STEP_TIMEOUT` | `3 days` | Weekly workflow: how long each human step waits before expiring |
+| `WEEKLY_MAX_ROUNDS` | `3` | Weekly workflow: max request-changes rounds |
 
-No secrets are committed. `.dev.vars` is gitignored; `.dev.vars.example` holds
-only placeholder names.
+Workers AI, Vectorize, and (when enabled) R2 have **no local emulation** —
+`wrangler dev` proxies them to the real services and needs `wrangler login`.
+Set `AGENT_FAKE_AI=1` to develop fully offline.
 
-### RAG / Vectorize history (Phase 4A)
+---
 
-A mutation to an **UPDATE / BLOCKER / FEEDBACK** enqueues a compact
-`{workspaceId, entityType, entityId}` event on `HISTORY_QUEUE` (never the record
-itself). The `queue()` consumer re-reads the current entity from WorkspaceDO,
-embeds it with **`@cf/baai/bge-base-en-v1.5` (768-dim)**, and upserts it into the
-**`internpulse-history`** Vectorize index under `namespace = workspaceId`. On each
-agent question, retrieval is scoped by both `namespace` and a `workspaceId`
-metadata filter, `topK` 4, min score 0.35. Retrieved history is a clearly
-separated, secondary prompt section — **current WorkspaceDO state wins any
-conflict** (a resolved blocker is never reported as open).
+## Cloudflare resource setup
 
-- **Queues** run fully locally in `wrangler dev` (no provisioning). For
-  `wrangler deploy`: `wrangler queues create internpulse-history-index`.
-- **Vectorize has no local emulation** — the binding is `"remote": true`, so
-  `wrangler dev` uses the real index and needs `wrangler login`. One-time setup:
+One-time, on your account (`wrangler login` first). Names use the `internpulse-*`
+convention. **None of these delete or overwrite anything.**
 
-  ```bash
-  wrangler vectorize create internpulse-history --dimensions=768 --metric=cosine
-  wrangler vectorize create-metadata-index internpulse-history --property-name=workspaceId --type=string
-  wrangler vectorize create-metadata-index internpulse-history --property-name=entityType --type=string
-  ```
+```bash
+# D1
+wrangler d1 create internpulse
+#   → put the returned database_id into wrangler.jsonc  (already set for this account)
+wrangler d1 migrations apply internpulse --remote
+npm run db:seed:remote
 
-- **Offline (`AGENT_FAKE_AI=1`):** the consumer no-ops and the agent skips
-  retrieval (`retrievedHistory: 0`) — build, CI and offline dev need no
-  Cloudflare account. The producer → consumer path still runs.
-- The index is a retrieval cache: `rm -rf .wrangler/state` resets DO state, and
-  stale vectors are overwritten (deterministic ids) or cleaned up when their
-  entity is gone. To wipe it entirely: `wrangler vectorize delete internpulse-history`
-  then recreate.
+# Vectorize  (already created for this account — do NOT recreate; the data is live)
+wrangler vectorize create internpulse-history --dimensions=768 --metric=cosine
+wrangler vectorize create-metadata-index internpulse-history --property-name=workspaceId --type=string
+wrangler vectorize create-metadata-index internpulse-history --property-name=entityType --type=string
 
-### Workflows: reminders + weekly review (Phase 4B)
+# Queues
+wrangler queues create internpulse-history-index
+wrangler queues create internpulse-workflow-events
 
-Two durable Cloudflare Workflows (`BlockerWorkflow`, `WeeklyReviewWorkflow`),
-exported from `src/worker/index.ts`.
+# R2  (requires enabling R2 once in the dashboard: R2 Object Storage → Enable)
+wrangler r2 bucket create internpulse-attachments
+```
 
-- **Blocker reminder/escalation** — when a blocker is created, `WorkspaceDO`
-  enqueues `{kind:"blocker.workflow.start", …}` on `WORKFLOW_QUEUE` (best-effort,
-  off the ack path). The `queue()` consumer calls
-  `BLOCKER_WORKFLOW.create({ id: "blocker-<blockerId>" })` — a deterministic id,
-  so duplicate starts are a no-op. The workflow sleeps `BLOCKER_REMINDER_DELAY`,
-  **re-reads the blocker from `WorkspaceDO`** (RESOLVED/gone → stop), creates
-  in-app reminders for intern + mentor, sleeps `BLOCKER_ESCALATION_DELAY`,
-  re-reads again, then escalates to the manager. Reminders dedup on
-  `(entity_type, entity_id, type, recipient_role)` — no duplicate escalation.
-- **Weekly review** — `POST /api/workspace/:id/weekly` (intern or mentor) creates
-  a `weekly_reports` row and starts `WEEKLY_WORKFLOW` (`id: "weekly-<reportId>"`).
-  The workflow: `step.do` draft (ProgressAgent → current state + RAG history →
-  Workers AI; **deterministic marked draft** if AI fails) → `waitForEvent`
-  intern-submit → `waitForEvent` mentor-review → `APPROVE` (finalize, notify
-  manager) or `REQUEST_CHANGES` (loop, ≤ `WEEKLY_MAX_ROUNDS`). Human actions are
-  plain HTTP routes that call `instance.sendEvent(...)` — no request is held open
-  across the waits.
+Workers AI, the Durable Objects, the ProgressAgent, and both Workflows are
+registered automatically by `wrangler deploy`.
 
-Timing is **config-driven** (`.dev.vars`) — short seconds locally, never baked
-in. `compatibility_date` is `2025-09-01` (needed for `step.waitForEvent`).
-Workflows and both queues run fully in `wrangler dev`. For `wrangler deploy`:
-`wrangler queues create internpulse-workflow-events` (Workflows deploy with the
-Worker).
+---
 
-In-app **reminders** live in `reminders` (DO SQLite); **weekly reports** in
-`weekly_reports`. The workflows only advance the lifecycle — the rows are the
-source of truth. New WS events: `reminder.created`, `reminder.updated`,
-`weekly.updated`; the snapshot carries the caller's `reminders` + `weeklyReports`.
+## Testing
 
-### Scripts
+```bash
+npm run build          # worker typecheck + client typecheck + production build
+```
 
-| Script | Purpose |
-|--------|---------|
-| `npm run dev` | Vite + Worker + DO, one dev server. |
-| `npm run build` | Typecheck (worker + client) then production build. |
-| `npm run db:migrate:local` | Apply `migrations/*.sql` to local D1. |
-| `npm run db:seed:local` | Load `seed/dev-seed.sql` (dev data — **not** a migration). |
-| `npm run cf-typegen` | Regenerate `worker-configuration.d.ts`. |
+Behavioural coverage (Node scripts against `wrangler dev`; see the report in the
+PR / commit messages for exact numbers):
 
-To reset local workspace state: `rm -rf .wrangler/state`.
+| Area | What's checked |
+|---|---|
+| Realtime | two clients, task/blocker/update broadcast, reconnect snapshot, presence |
+| Blockers | reminder fires only if still open; escalation only after the second delay; resolving stops it; no duplicate escalation |
+| Weekly | draft → edit → submit → request changes → resubmit → approve → manager visibility; `409` on out-of-state actions |
+| Agent | current-state grounding; fresh mutation reflected immediately; `groundedOn` counts |
+| RAG | semantic retrieval of old updates/blockers/feedback; workspace isolation; resolved blocker retrieved but never reported as open |
+| Documents | upload → R2 → indexed → agent retrieves the right chunk and cites the filename; workspace isolation |
+| R2 | upload / list / download / delete; scoped to the right workspace; non-extractable files still stored + downloadable |
+| Authorization | invalid role/action → 403/409; no-membership → 403; demo identity never treated as auth |
+| AI failure | blocker reminders use templated text; weekly draft falls back to a clearly-marked deterministic report |
 
-## Roles (Phase 2 matrix)
+Latest run: build clean; Phase 2 realtime 28/28; Phase 3 agent 17/17; blocker
+workflow 7/7; weekly workflow 23/23; AI-unavailable 7/7; RAG + documents pass
+(subject to Vectorize's ~30–90s async indexing).
 
-| Action | intern | mentor | manager | no membership |
-|---|:--:|:--:|:--:|:--:|
-| read workspace / snapshot | ✅ | ✅ | ✅ | ✅ (read-only) |
-| task create / update / move / delete | ✅ | ✅ | — | — |
-| post update · raise blocker | ✅ | ✅ | ✅ | — |
-| resolve blocker · add feedback | — | ✅ | — | — |
-| manager overview | ✅ | ✅ | ✅ | ✅ |
+---
 
-Identity (`userId`/`displayName`) is supplied by the browser and is **DEV/DEMO
-only — not authentication**. The Worker's `resolveRole` is the single seam a real
-identity provider replaces later; nothing downstream changes.
+## Deployment
 
-## HTTP API
+```bash
+wrangler login
+npm run build
+wrangler deploy
+```
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/health` | Liveness + D1 reachability. |
-| `GET` | `/api/workspaces` | List workspaces (D1). |
-| `GET` | `/api/overview?userId=` | Manager overview: D1 workspaces + per-DO live counts. |
-| `GET` | `/api/workspace/:id/ws` | WebSocket upgrade → workspace DO. |
-| `GET` | `/api/workspace/:id/snapshot` | Authoritative snapshot as JSON (debug/testing). |
-| `GET` | `/api/workspace/:id/summary` | `{activeTasks, openBlockers, latestUpdate}` (used by overview). |
-| `GET` | `/api/workspace/:id/agent` | This user's Progress Agent conversation history. |
-| `POST` | `/api/workspace/:id/agent` | Ask the Progress Agent (`{prompt}`) — grounded in current state + retrieved history. Response includes `groundedOn` (current-state counts + `retrievedHistory`) and `retrieved[]` (metadata only, no vectors). |
-| `GET` | `/api/workspace/:id/reminders` | This user's reminders (by role, or pinned to them). |
-| `POST` | `/api/workspace/:id/reminders/:rid/ack` | Acknowledge a reminder. |
-| `POST` | `/api/workspace/:id/weekly` | Start a weekly review (intern/mentor). Idempotent per period. |
-| `GET` | `/api/workspace/:id/weekly` | List reports (managers see only `APPROVED`). |
-| `GET` | `/api/workspace/:id/weekly/:rid` | One report (managers: only if `APPROVED`). |
-| `PATCH` | `/api/workspace/:id/weekly/:rid` | Edit the draft (intern; only `DRAFT`/`CHANGES_REQUESTED`). |
-| `POST` | `/api/workspace/:id/weekly/:rid/submit` | Intern submits → workflow event. |
-| `POST` | `/api/workspace/:id/weekly/:rid/review` | Mentor `{decision, feedback?}` → workflow event. |
+`wrangler deploy` uploads the SPA to Workers assets, publishes the Worker, and
+registers the DOs / ProgressAgent / both Workflows / both Queue consumers.
 
-All routes go through the **same `resolveRole` boundary** as every other
-workspace route: no resolvable role → `403`. Weekly review adds per-action role
-checks (intern edits/submits, mentor reviews) and returns `409` for
-out-of-state actions (submit twice, approve an approved report, edit while under
-review).
+**Current live deployment:** `https://internpulse.amanprabhune.workers.dev` — has
+D1, Durable Objects, ProgressAgent, Workflows, Queues, Vectorize, and Workers AI.
+**Attachments are disabled in production** until R2 is enabled on the account
+(`/api/workspace/:id/attachments` returns `503`); the rest works. To finish:
+enable R2 in the dashboard, then `wrangler r2 bucket create internpulse-attachments && wrangler deploy`.
 
-## Realtime protocol
+---
 
-Typed in [`src/shared/protocol.ts`](src/shared/protocol.ts), imported by client + Worker + DO.
+## Architecture tradeoffs
 
-- **client → DO** (every mutation carries `requestId`): `task.create`, `task.update`, `task.move`, `task.delete`, `blocker.create`, `blocker.resolve`, `update.create`, `feedback.create`, `ping`.
-- **DO → client**: `workspace.snapshot`, `task.created/updated/deleted`, `blocker.created/resolved`, `update.created`, `feedback.created`, `activity.created`, `presence.updated`, `reminder.created/updated`, `weekly.updated`, `ack` (idempotency), `error`, `pong`.
+- **DO SQLite vs D1 for workspace state** — DO SQLite wins: it's transactional
+  with the realtime coordinator and needs no network hop. D1 is reserved for
+  cross-workspace relational data.
+- **Manager overview fans out to each workspace DO** at read time rather than
+  denormalising counts into D1. Simple and always-correct; O(workspaces)
+  subrequests. A push-based read model would scale better but isn't needed here.
+- **Vectorize is retrieval-only.** Current state always comes from the DO; a
+  stale retrieved passage never overrides it (enforced in the prompt + tested).
+- **Queues at exactly two seams.** Everything else calls directly — Workflows are
+  started synchronously from HTTP where safe, human actions are direct
+  `sendEvent`, workflow steps call DO RPC directly.
+- **Workflow timing is config-driven**, read inside `run()` — production values
+  are deliberately not baked in.
+- **Documents use `env.AI.toMarkdown`** (a platform utility) plus plain-text
+  reading — no PDF/DOCX parser dependency, so document handling can't dominate
+  the bundle. Unsupported files are still stored and downloadable.
+- **Demo identity is not authentication.** It's centralised and clearly labelled;
+  `resolveRole()` is the single seam a real provider replaces.
 
-The DO is authoritative: it validates, persists to SQLite, records activity,
-de-duplicates by `requestId` (`processed_requests` table, pruned after 1h),
-broadcasts the result, and replays a full snapshot on every (re)connect.
-Concurrent edits are last-write-wins.
+## Known demo limitations
 
-## Drag and drop
+- **Demo authentication only.** The browser picks who it is (`userId` /
+  `displayName`); an unassigned identity chooses a role via a dev selector. This
+  is explicit in the UI and code. Do not treat it as production auth.
+- **Attachments off in the current production deployment** until R2 is enabled
+  (works locally and once the bucket exists).
+- **Vectorize indexing is asynchronous** (~30–90s). A brand-new update or
+  document is not instantly retrievable by the agent; current DO state is.
+- **Workflow delays run in real time.** Set short values in `.dev.vars` to demo
+  the blocker reminder/escalation quickly.
+- **Weekly review is started manually** (no Friday cron) — deliberate for this phase.
+- **No external delivery** — reminders are in-app only; no Slack/email/SMS/calendar.
+- **`waitForEvent` in local dev**: after a *timeout* the workflow ends cleanly
+  rather than continuing to wait (works around a known local-emulator quirk).
+- Single-region D1; last-write-wins on concurrent edits; no offline mode.
 
-Native HTML5 DnD — no dependency. A `TaskCard` is `draggable` and puts its id on
-`dataTransfer`; a `Column` calls `preventDefault` on `dragover` and on `drop`
-reads the id and sends `task.move`. The move round-trips through the DO and comes
-back as `task.updated`.
+---
+
+## Demo walkthrough
+
+See **[`DEMO.md`](./DEMO.md)** for the ~5-minute script.
+
+---
 
 ## Project layout
 
 ```
-migrations/0001_init.sql          D1 schema
-seed/dev-seed.sql                 DEV/DEMO seed data
-src/shared/protocol.ts            Types shared across client / Worker / DO / Agent
-src/worker/index.ts               Routes, authorization boundary, overview fan-out, agent route
-src/worker/workspace-do.ts        WorkspaceDO: transport, validation, broadcast, snapshot, getAgentContext RPC
-src/worker/workspace-store.ts     DO SQLite schema + migration + typed CRUD (no ORM)
-src/worker/permissions.ts         Role matrix
-src/worker/progress-agent.ts      ProgressAgent (Agents SDK): context fetch, RAG retrieval, inference, conversation store
-src/worker/agent-context.ts       Pure: bounded state projection + prompt building (+ history section) + offline stub
-src/worker/history-index.ts       Pure: entity→text, vector id, metadata shape, history-block rendering
-src/worker/queue-consumer.ts      HISTORY_QUEUE + WORKFLOW_QUEUE consumers
-src/worker/blocker-workflow.ts    BlockerWorkflow: durable reminder → escalation
-src/worker/weekly-workflow.ts     WeeklyReviewWorkflow: draft → submit → review (human-in-the-loop)
-src/worker/reminders.ts           Pure: deterministic reminder/escalation/weekly-draft text; isoWeek()
-src/client/                       React SPA: identity, useWorkspace hook, components/ (incl. RemindersPanel), tabs/ (incl. AgentTab, WeeklyTab), board/
+migrations/0001_init.sql          D1 schema (users/teams/workspaces/memberships)
+seed/dev-seed.sql                 org data for the demo (Alice / Mia / Jordan)
+scripts/demo-seed.mjs             populates a workspace DO with the demo story  (npm run demo:seed)
+
+src/shared/protocol.ts            all types shared by client / Worker / DO / Agent / Workflows
+src/worker/index.ts               routes, the resolveRole auth seam, overview fan-out, queue() dispatch
+src/worker/workspace-do.ts        WorkspaceDO: transport, validation, broadcast, snapshot, RPC surface
+src/worker/workspace-store.ts     DO SQLite schema + migrations (v1→v4) + typed CRUD (no ORM)
+src/worker/permissions.ts         the role matrix (canMutate)
+src/worker/progress-agent.ts      ProgressAgent: context RPC, RAG retrieval, inference, drafting
+src/worker/agent-context.ts       bounded state projection + prompt building (current / history / documents)
+src/worker/history-index.ts       vector ids, metadata shape, retrieval rendering
+src/worker/documents.ts           text extraction (plain-text + AI.toMarkdown), chunking, R2 key
+src/worker/queue-consumer.ts      history/document indexing + workflow-start consumers
+src/worker/blocker-workflow.ts    BlockerWorkflow (reminder → escalation)
+src/worker/weekly-workflow.ts     WeeklyReviewWorkflow (draft → submit → review loop)
+src/worker/reminders.ts           deterministic reminder / weekly-draft text; isoWeek()
+src/client/                       React SPA: identity, useWorkspace hook, components/, tabs/, board/
 ```
-
-## Deliberately deferred (post-4B)
-
-R2 + file attachments + document indexing, Slack/email/SMS/calendar delivery
-channels, cron/scheduled Workflow triggers (e.g. auto Friday weekly review),
-agent-triggered state mutations, blocker auto-resolution, analytics / performance
-scoring, real authentication, comments, task/activity indexing, retrieval
-re-ranking, reminder snooze UI, and reorder-within-column / touch / keyboard
-drag-and-drop.
