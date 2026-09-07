@@ -36,12 +36,20 @@ const json = (data: unknown, status = 200): Response =>
   Response.json(data, { status, headers: { "cache-control": "no-store" } });
 
 /**
- * Authorization boundary (DEV/DEMO).
+ * THE authorization boundary. Every workspace route (HTTP + WebSocket upgrade)
+ * calls this exactly once; nothing downstream re-derives identity.
  *
- * `userId` comes from the browser and is NOT authenticated. A real identity
- * provider will later replace this function's body; nothing downstream changes.
- * If the identity maps to a D1 membership, that role is authoritative. Otherwise
- * we honour a `devRole` query param purely so the demo is usable.
+ * DEMO IDENTITY (not production auth): `userId` / `displayName` come from the
+ * browser (see src/client/identity.ts) and are unauthenticated. If the identity
+ * maps to a D1 `memberships` row, that role is authoritative; otherwise a
+ * `devRole` query param is honoured so a reviewer can try all three roles.
+ * `null` here => 403 everywhere.
+ *
+ * To make this real, replace ONLY this function body: read a verified principal
+ * from a Cloudflare-native source — a signed cookie/JWT set by Cloudflare Access
+ * (`Cf-Access-Jwt-Assertion`), or a session Durable Object — look its id up in
+ * D1 `memberships`, and drop the `devRole` fallback. The `Caller` shape, the
+ * route handlers, `canMutate`, and the DO all stay unchanged.
  */
 async function resolveRole(
   env: Env,

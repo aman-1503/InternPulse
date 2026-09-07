@@ -1,24 +1,30 @@
--- DEV / DEMO ONLY. This is NOT a migration and must never run in production.
--- Apply locally with:  npm run db:seed:local
+-- DEV / DEMO ONLY. Not a migration — never run in production.
+-- Apply locally:  npm run db:seed:local     (remote: npm run db:seed:remote)
 --
--- Provides three identities and two workspaces so the role-aware UI and the
--- manager overview have something to show. The browser "identity switcher"
--- (DEV ONLY) sets localStorage to one of these user ids so D1 membership
--- resolves a real role.
+-- Organization metadata for the demo story:
+--   Alice Chen  — intern
+--   Mia Rivera  — mentor
+--   Jordan Park — manager
+-- on the "Authentication / Worker Integration" project (+ a second project so the
+-- manager overview has more than one row).
+--
+-- Workspace-local content (tasks/blockers/updates/feedback/attachments) is NOT
+-- here — it lives in each workspace Durable Object. Populate it with:
+--   npm run demo:seed        (after `npm run dev` is running)
 
 INSERT OR IGNORE INTO users (id, email, display_name) VALUES
-  ('u-alice', 'alice@example.com', 'Alice (Intern)'),
-  ('u-mia',   'mia@example.com',   'Mia (Mentor)'),
-  ('u-max',   'max@example.com',   'Max (Manager)');
+  ('u-alice',  'alice@internpulse.dev',  'Alice Chen'),
+  ('u-mia',    'mia@internpulse.dev',    'Mia Rivera'),
+  ('u-jordan', 'jordan@internpulse.dev', 'Jordan Park');
 
 INSERT OR IGNORE INTO workspaces (id, name, slug) VALUES
-  ('demo',     'Demo Internship', 'demo'),
-  ('payments', 'Payments Revamp', 'payments');
+  ('demo',     'Authentication / Worker Integration', 'demo'),
+  ('payments', 'Payments Service Revamp',             'payments');
 
 INSERT OR IGNORE INTO memberships (id, workspace_id, user_id, role) VALUES
-  ('mb-demo-alice',     'demo',     'u-alice', 'intern'),
-  ('mb-demo-mia',       'demo',     'u-mia',   'mentor'),
-  ('mb-demo-max',       'demo',     'u-max',   'manager'),
-  ('mb-payments-alice', 'payments', 'u-alice', 'intern'),
-  ('mb-payments-mia',   'payments', 'u-mia',   'mentor'),
-  ('mb-payments-max',   'payments', 'u-max',   'manager');
+  ('mb-demo-alice',      'demo',     'u-alice',  'intern'),
+  ('mb-demo-mia',        'demo',     'u-mia',    'mentor'),
+  ('mb-demo-jordan',     'demo',     'u-jordan', 'manager'),
+  ('mb-payments-alice',  'payments', 'u-alice',  'intern'),
+  ('mb-payments-mia',    'payments', 'u-mia',    'mentor'),
+  ('mb-payments-jordan', 'payments', 'u-jordan', 'manager');

@@ -784,3 +784,11 @@ button:disabled {
   color: var(--danger);
   border-color: var(--danger);
 }
+
+/* ---- Stage 5 polish ---- */
+.next-actions {
+  border-left: 3px solid var(--accent);
+}
+.next-actions .list li {
+  font-size: 0.9rem;
+}

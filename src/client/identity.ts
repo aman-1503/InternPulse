@@ -13,9 +13,9 @@ export interface DemoIdentity {
 
 /** Matches seed/dev-seed.sql so D1 membership resolves a real role. */
 export const SEEDED_IDENTITIES: ReadonlyArray<DemoIdentity & { seededRole: Role }> = [
-  { userId: "u-alice", displayName: "Alice (Intern)", seededRole: "intern" },
-  { userId: "u-mia", displayName: "Mia (Mentor)", seededRole: "mentor" },
-  { userId: "u-max", displayName: "Max (Manager)", seededRole: "manager" },
+  { userId: "u-alice", displayName: "Alice Chen", seededRole: "intern" },
+  { userId: "u-mia", displayName: "Mia Rivera", seededRole: "mentor" },
+  { userId: "u-jordan", displayName: "Jordan Park", seededRole: "manager" },
 ];
 
 const ID_KEY = "internpulse.identity.v2";

@@ -14,11 +14,38 @@ export function OverviewTab({
   const role = state.you?.role ?? null;
   const latestDaily = state.updates.find((u) => u.type === "DAILY") ?? state.updates[0] ?? null;
   const activeTasks = state.tasks.filter((t) => t.status !== "DONE");
+  const doneTasks = state.tasks.filter((t) => t.status === "DONE");
   const openBlockers = state.blockers.filter((b) => b.status === "OPEN");
   const recentFeedback = state.feedback.slice(0, 3);
+  const openReminders = state.reminders.filter((r) => r.status === "OPEN");
+  const weekly = [...state.weeklyReports].sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+  const indexingDocs = state.attachments.filter((a) => a.indexStatus === "pending").length;
+
+  const nextActions: string[] = [];
+  if (openBlockers.length > 0) nextActions.push(`Resolve or discuss ${openBlockers.length} open blocker(s).`);
+  if (openReminders.length > 0) nextActions.push(`${openReminders.length} reminder(s) need acknowledgement.`);
+  if (!weekly) nextActions.push("No weekly review started for this period yet.");
+  else if (weekly.status === "DRAFT") nextActions.push("Weekly review is a draft — intern to edit and submit.");
+  else if (weekly.status === "SUBMITTED") nextActions.push("Weekly review is awaiting mentor approval.");
+  else if (weekly.status === "CHANGES_REQUESTED") nextActions.push("Mentor requested changes on the weekly review.");
+  if (nextActions.length === 0) nextActions.push("Nothing outstanding — keep the updates coming.");
 
   return (
     <div className="grid-2">
+      <section className="card span-2 next-actions">
+        <h3>Next actions</h3>
+        <ul className="list">
+          {nextActions.map((a, i) => (
+            <li key={i}>→ {a}</li>
+          ))}
+        </ul>
+        <p className="meta">
+          {activeTasks.length} active · {doneTasks.length} done ·{" "}
+          {openBlockers.length} open blocker(s) ·{" "}
+          {weekly ? `weekly: ${weekly.status}` : "no weekly report"}
+          {indexingDocs > 0 && ` · ${indexingDocs} document(s) indexing`}
+        </p>
+      </section>
       <section className="card">
         <h3>Latest update</h3>
         {latestDaily ? (
