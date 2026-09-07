@@ -21,6 +21,8 @@ import { blockerText, feedbackText, updateText } from "./history-index";
 import { WorkspaceStore } from "./workspace-store";
 import type {
   AgentContext,
+  Attachment,
+  AttachmentIndexStatus,
   Blocker,
   HistoryIndexEvent,
   IndexableEntity,
@@ -244,6 +246,47 @@ export class WorkspaceDO extends DurableObject<Env> {
     const report = this.store.setWeeklyStatus(id, status, extra);
     if (report) this.broadcast({ type: "weekly.updated", report });
     return report;
+  }
+
+  // -- RPC: Stage 1 (finish) attachments -----------------------------
+  // Bytes live in R2 (the Worker writes them); this DO owns only the metadata.
+
+  async createAttachment(input: {
+    id: string;
+    filename: string;
+    contentType: string;
+    size: number;
+    uploaderId: string;
+    uploaderName: string;
+    indexStatus: AttachmentIndexStatus;
+  }): Promise<Attachment> {
+    const attachment = this.store.createAttachment(input);
+    this.broadcast({ type: "attachment.created", attachment });
+    return attachment;
+  }
+
+  async getAttachment(id: string): Promise<Attachment | null> {
+    return this.store.getAttachment(id);
+  }
+
+  async listAttachments(): Promise<Attachment[]> {
+    return this.store.listAttachments();
+  }
+
+  async setAttachmentIndex(
+    id: string,
+    indexStatus: AttachmentIndexStatus,
+    chunkCount: number,
+  ): Promise<Attachment | null> {
+    const attachment = this.store.setAttachmentIndex(id, indexStatus, chunkCount);
+    if (attachment) this.broadcast({ type: "attachment.updated", attachment });
+    return attachment;
+  }
+
+  async deleteAttachment(id: string): Promise<Attachment | null> {
+    const removed = this.store.deleteAttachment(id);
+    if (removed) this.broadcast({ type: "attachment.deleted", id });
+    return removed;
   }
 
   // -- WebSocket lifecycle (Hibernation API) --------------------------
@@ -555,6 +598,7 @@ export class WorkspaceDO extends DurableObject<Env> {
       activity: this.store.listActivity(),
       presence: this.presenceState(),
       reminders: this.store.listRemindersFor(identity.userId, identity.role),
+      attachments: this.store.listAttachments(),
       weeklyReports: this.store.listWeeklyReports(),
     };
   }

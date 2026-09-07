@@ -8,7 +8,7 @@
  */
 
 /** Bump when WS message shapes or the DO SQLite schema change incompatibly. */
-export const WS_PROTOCOL_VERSION = 3;
+export const WS_PROTOCOL_VERSION = 4;
 
 export type Role = "intern" | "mentor" | "manager";
 
@@ -185,6 +185,8 @@ export interface WorkspaceSnapshot {
   presence: PresenceState;
   /** Phase 4B: reminders addressed to the connecting user (by role, or directly). */
   reminders: Reminder[];
+  /** Stage 1 (finish): workspace file attachments (metadata only; bytes live in R2). */
+  attachments: Attachment[];
   /** Phase 4B: weekly reports visible to the connecting user. */
   weeklyReports: WeeklyReport[];
 }
@@ -242,6 +244,29 @@ export interface WeeklyReport {
 
 export type WeeklyReviewDecision = "APPROVE" | "REQUEST_CHANGES";
 
+// ---------------------------------------------------------------------------
+// Stage 1 (finish): R2 attachments + document RAG
+// ---------------------------------------------------------------------------
+
+export type AttachmentIndexStatus =
+  | "pending" // queued for text extraction + embedding
+  | "indexed" // chunks in Vectorize
+  | "unsupported" // stored + downloadable, but no extractable text
+  | "failed" // extraction/embedding error
+  | "skipped"; // offline / AI unavailable at upload time
+
+export interface Attachment {
+  id: string;
+  filename: string;
+  contentType: string;
+  size: number;
+  uploaderId: string;
+  uploaderName: string;
+  createdAt: number;
+  indexStatus: AttachmentIndexStatus;
+  chunkCount: number;
+}
+
 /** Message shapes carried on the internpulse-workflow-events queue. */
 export type WorkflowEventMessage = {
   kind: "blocker.workflow.start";
@@ -291,18 +316,23 @@ export interface AgentGroundedOn {
   feedback: number;
   activity: number;
   contextGeneratedAt: number;
-  /** Phase 4A: number of historical records retrieved from Vectorize for this answer. */
+  /** Phase 4A: historical UPDATE/BLOCKER/FEEDBACK records retrieved from Vectorize. */
   retrievedHistory: number;
+  /** Stage 1 (finish): document chunks retrieved from Vectorize. */
+  retrievedDocuments: number;
 }
 
 /** One record returned by semantic retrieval. Internal/debug — no vectors exposed. */
 export interface RetrievedHistoryItem {
-  entityType: IndexableEntityType;
+  entityType: RetrievedEntityType;
   entityId: string;
   score: number;
   createdAt: number;
   status: string | null;
   snippet: string;
+  /** Present for DOCUMENT chunks. */
+  filename?: string;
+  chunkIndex?: number;
 }
 
 export interface AgentAskResponse {
@@ -327,11 +357,21 @@ export const INDEXABLE_ENTITY_TYPES: readonly IndexableEntityType[] = [
   "FEEDBACK",
 ];
 
+/** Everything that can appear as a Vectorize match (history + uploaded docs). */
+export type RetrievedEntityType = IndexableEntityType | "DOCUMENT";
+
 /** Compact reference event on the history-index queue. Never carries the record. */
 export interface HistoryIndexEvent {
   workspaceId: string;
   entityType: IndexableEntityType;
   entityId: string;
+}
+
+/** Stage 1 (finish): index the text of an uploaded R2 document into Vectorize. */
+export interface DocumentIndexEvent {
+  document: true;
+  workspaceId: string;
+  attachmentId: string;
 }
 
 /**
@@ -374,8 +414,10 @@ export const AGENT_PROMPT_MAX = 2000;
 export const AGENT_QUICK_PROMPTS: readonly string[] = [
   "Summarize current progress",
   "What am I blocked on?",
+  "What needs my attention?",
   "What should I discuss with my mentor?",
-  "What changed recently?",
+  "What happened this week?",
+  "What recurring blockers have we had?",
 ];
 
 // ---------------------------------------------------------------------------
@@ -411,6 +453,9 @@ export type ServerMessage =
   | { type: "reminder.created"; reminder: Reminder }
   | { type: "reminder.updated"; reminder: Reminder }
   | { type: "weekly.updated"; report: WeeklyReport }
+  | { type: "attachment.created"; attachment: Attachment }
+  | { type: "attachment.updated"; attachment: Attachment }
+  | { type: "attachment.deleted"; id: string }
   | { type: "ack"; requestId: string; duplicate?: boolean }
   | { type: "error"; message: string; code?: string; requestId?: string }
   | { type: "pong"; t: number };

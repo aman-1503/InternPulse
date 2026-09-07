@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import {
   type ActivityEntry,
+  type Attachment,
   type Blocker,
   type ClientMessage,
   type Feedback,
@@ -29,6 +30,7 @@ export interface WorkspaceState {
   activity: ActivityEntry[];
   presence: PresenceState;
   reminders: Reminder[];
+  attachments: Attachment[];
   weeklyReports: WeeklyReport[];
   lastError: { at: number; message: string; code?: string } | null;
 }
@@ -44,6 +46,7 @@ const initialState: WorkspaceState = {
   activity: [],
   presence: { count: 0, members: [] },
   reminders: [],
+  attachments: [],
   weeklyReports: [],
   lastError: null,
 };
@@ -74,6 +77,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         activity: msg.activity,
         presence: msg.presence,
         reminders: msg.reminders,
+        attachments: msg.attachments,
         weeklyReports: msg.weeklyReports,
       };
     case "task.created":
@@ -100,6 +104,11 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       return { ...state, reminders: upsert(state.reminders, msg.reminder) };
     case "weekly.updated":
       return { ...state, weeklyReports: upsert(state.weeklyReports, msg.report) };
+    case "attachment.created":
+    case "attachment.updated":
+      return { ...state, attachments: upsert(state.attachments, msg.attachment) };
+    case "attachment.deleted":
+      return { ...state, attachments: state.attachments.filter((a) => a.id !== msg.id) };
     case "error":
       return { ...state, lastError: { at: Date.now(), message: msg.message, code: msg.code } };
     case "ack":

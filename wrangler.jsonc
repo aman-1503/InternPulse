@@ -41,6 +41,14 @@
     { "binding": "VECTORIZE", "index_name": "internpulse-history", "remote": true }
   ],
 
+  // Stage 1 (finish): R2 stores original uploaded files ONLY. Attachment
+  // metadata is workspace-local (DO SQLite); searchable text chunks live in
+  // Vectorize. R2 emulates in `wrangler dev`; for deploy:
+  //   wrangler r2 bucket create internpulse-attachments
+  "r2_buckets": [
+    { "binding": "ATTACHMENTS", "bucket_name": "internpulse-attachments" }
+  ],
+
   // A mutation to an UPDATE / BLOCKER / FEEDBACK enqueues a compact reference
   // event; the consumer re-reads the authoritative entity from WorkspaceDO,
   // embeds it, and upserts into Vectorize. Queues run fully locally in

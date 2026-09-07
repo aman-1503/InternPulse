@@ -13,6 +13,7 @@ import type {
   IndexableEntity,
   IndexableEntityType,
   ProgressUpdate,
+  RetrievedEntityType,
   RetrievedHistoryItem,
 } from "../shared/protocol";
 
@@ -66,7 +67,7 @@ export function toRetrievedItem(match: {
   metadata?: Record<string, unknown> | null;
 }): RetrievedHistoryItem | null {
   const m = match.metadata ?? {};
-  const entityType = m.entityType as IndexableEntityType | undefined;
+  const entityType = m.entityType as RetrievedEntityType | undefined;
   const entityId = m.entityId as string | undefined;
   if (!entityType || !entityId) return null;
   return {
@@ -76,18 +77,33 @@ export function toRetrievedItem(match: {
     createdAt: typeof m.createdAt === "number" ? m.createdAt : 0,
     status: typeof m.status === "string" ? m.status : null,
     snippet: typeof m.snippet === "string" ? m.snippet : "",
+    filename: typeof m.filename === "string" ? m.filename : undefined,
+    chunkIndex: typeof m.chunkIndex === "number" ? m.chunkIndex : undefined,
   };
 }
 
-/** Rendered historical-context block for the model prompt. */
+const DAY = 86_400_000;
+const ageLabel = (ts: number, now: number) =>
+  ts ? `${Math.max(0, Math.floor((now - ts) / DAY))}d ago` : "unknown age";
+
+/** Rendered HISTORICAL-CONTEXT block (UPDATE/BLOCKER/FEEDBACK) for the prompt. */
 export function renderHistoryBlock(items: RetrievedHistoryItem[], now = Date.now()): string {
   if (items.length === 0) return "(no relevant history retrieved)";
-  const DAY = 86_400_000;
   return items
     .map((it) => {
-      const age = it.createdAt ? `${Math.max(0, Math.floor((now - it.createdAt) / DAY))}d ago` : "unknown age";
       const status = it.status ? ` [${it.status}]` : "";
-      return `- ${it.entityType}${status}, ${age} (relevance ${it.score}): ${it.snippet}`;
+      return `- ${it.entityType}${status}, ${ageLabel(it.createdAt, now)} (relevance ${it.score}): ${it.snippet}`;
     })
+    .join("\n");
+}
+
+/** Rendered DOCUMENT-KNOWLEDGE block for the prompt. */
+export function renderDocumentBlock(items: RetrievedHistoryItem[], now = Date.now()): string {
+  if (items.length === 0) return "(no relevant document passages retrieved)";
+  return items
+    .map(
+      (it) =>
+        `- "${it.filename ?? "document"}" (chunk ${it.chunkIndex ?? 0}, uploaded ${ageLabel(it.createdAt, now)}, relevance ${it.score}): ${it.snippet}`,
+    )
     .join("\n");
 }

@@ -13,6 +13,8 @@
 import {
   type ActivityEntry,
   type ActivityType,
+  type Attachment,
+  type AttachmentIndexStatus,
   type Blocker,
   type Feedback,
   type ProgressUpdate,
@@ -55,9 +57,28 @@ export class WorkspaceStore {
     const version = Number(this.meta("schema_version") ?? "0");
     if (version < 2) this.migrateToV2();
     if (version < 3) this.migrateToV3();
+    if (version < 4) this.migrateToV4();
     if (version < WS_PROTOCOL_VERSION) {
       this.setMeta("schema_version", String(WS_PROTOCOL_VERSION));
     }
+  }
+
+  /** Stage 1 (finish): workspace file attachment metadata (bytes live in R2). */
+  private migrateToV4(): void {
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS attachments (
+        id            TEXT PRIMARY KEY,
+        filename      TEXT NOT NULL,
+        content_type  TEXT NOT NULL,
+        size          INTEGER NOT NULL,
+        uploader_id   TEXT NOT NULL,
+        uploader_name TEXT NOT NULL,
+        created_at    INTEGER NOT NULL,
+        index_status  TEXT NOT NULL DEFAULT 'pending',
+        chunk_count   INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_attachments_created ON attachments (created_at);
+    `);
   }
 
   /** Phase 4B: workspace-local reminders + weekly reports (additive). */
@@ -651,6 +672,67 @@ export class WorkspaceStore {
     this.sql.exec(`UPDATE weekly_reports SET ${sets.join(", ")} WHERE id = ?`, ...vals);
     return this.getWeeklyReport(id);
   }
+
+  // -- attachments (Stage 1 finish) ---------------------------------
+
+  createAttachment(input: {
+    id: string;
+    filename: string;
+    contentType: string;
+    size: number;
+    uploaderId: string;
+    uploaderName: string;
+    indexStatus: AttachmentIndexStatus;
+  }): Attachment {
+    this.sql.exec(
+      `INSERT INTO attachments
+         (id, filename, content_type, size, uploader_id, uploader_name, created_at, index_status, chunk_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      input.id,
+      input.filename,
+      input.contentType,
+      input.size,
+      input.uploaderId,
+      input.uploaderName,
+      Date.now(),
+      input.indexStatus,
+    );
+    return this.getAttachment(input.id)!;
+  }
+
+  getAttachment(id: string): Attachment | null {
+    const row = this.sql.exec("SELECT * FROM attachments WHERE id = ?", id).toArray()[0];
+    return row ? toAttachment(row) : null;
+  }
+
+  listAttachments(limit = 100): Attachment[] {
+    return this.sql
+      .exec("SELECT * FROM attachments ORDER BY created_at DESC LIMIT ?", limit)
+      .toArray()
+      .map(toAttachment);
+  }
+
+  setAttachmentIndex(
+    id: string,
+    indexStatus: AttachmentIndexStatus,
+    chunkCount: number,
+  ): Attachment | null {
+    if (!this.getAttachment(id)) return null;
+    this.sql.exec(
+      "UPDATE attachments SET index_status = ?, chunk_count = ? WHERE id = ?",
+      indexStatus,
+      chunkCount,
+      id,
+    );
+    return this.getAttachment(id);
+  }
+
+  deleteAttachment(id: string): Attachment | null {
+    const existing = this.getAttachment(id);
+    if (!existing) return null;
+    this.sql.exec("DELETE FROM attachments WHERE id = ?", id);
+    return existing;
+  }
 }
 
 // -- row -> domain mappers ---------------------------------------------
@@ -746,5 +828,19 @@ function toWeekly(r: Row): WeeklyReport {
     submittedAt: r.submitted_at === null ? null : Number(r.submitted_at),
     mentorReviewedAt: r.mentor_reviewed_at === null ? null : Number(r.mentor_reviewed_at),
     finalizedAt: r.finalized_at === null ? null : Number(r.finalized_at),
+  };
+}
+
+function toAttachment(r: Row): Attachment {
+  return {
+    id: String(r.id),
+    filename: String(r.filename),
+    contentType: String(r.content_type),
+    size: Number(r.size),
+    uploaderId: String(r.uploader_id),
+    uploaderName: String(r.uploader_name),
+    createdAt: Number(r.created_at),
+    indexStatus: String(r.index_status) as AttachmentIndexStatus,
+    chunkCount: Number(r.chunk_count ?? 0),
   };
 }

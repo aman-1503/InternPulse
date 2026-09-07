@@ -5,7 +5,14 @@ import { BlockerWorkflow } from "./blocker-workflow";
 import { WeeklyReviewWorkflow } from "./weekly-workflow";
 import { handleHistoryIndexBatch, handleWorkflowEventBatch } from "./queue-consumer";
 import { isoWeek } from "./reminders";
+import {
+  MAX_ATTACHMENT_BYTES,
+  attachmentKey,
+  isExtractable,
+  safeFilename,
+} from "./documents";
 import type {
+  DocumentIndexEvent,
   HealthResponse,
   HistoryIndexEvent,
   OverviewResponse,
@@ -219,6 +226,112 @@ async function handleReminders(
   return json({ error: "not found" }, 404);
 }
 
+// --- Stage 1 (finish): R2 attachments -----------------------------------------
+
+async function handleAttachments(
+  env: Env,
+  url: URL,
+  request: Request,
+  workspaceId: string,
+  stub: WorkspaceStub,
+  caller: Caller,
+  tail: string[],
+): Promise<Response> {
+  const canWrite = caller.role === "intern" || caller.role === "mentor";
+
+  // GET /attachments -> list
+  if (request.method === "GET" && tail.length === 0) {
+    return json({ attachments: await stub.listAttachments() });
+  }
+
+  // POST /attachments -> upload (multipart 'file')
+  if (request.method === "POST" && tail.length === 0) {
+    if (!canWrite) return json({ error: "your role cannot upload files", code: "forbidden" }, 403);
+    let file: unknown;
+    try {
+      file = (await request.formData()).get("file");
+    } catch {
+      return json({ error: "expected multipart/form-data with a 'file' field", code: "bad_request" }, 400);
+    }
+    if (!(file instanceof File) || file.size === 0) {
+      return json({ error: "a non-empty 'file' field is required", code: "bad_request" }, 400);
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      return json({ error: `file exceeds ${MAX_ATTACHMENT_BYTES} bytes`, code: "too_large" }, 413);
+    }
+
+    const attachmentId = crypto.randomUUID();
+    const filename = file.name || "upload";
+    const contentType = file.type || "application/octet-stream";
+    const key = attachmentKey(workspaceId, attachmentId, filename);
+
+    await env.ATTACHMENTS.put(key, file.stream(), { httpMetadata: { contentType } });
+
+    const extractable = isExtractable(filename, contentType);
+    const attachment = await stub.createAttachment({
+      id: attachmentId,
+      filename,
+      contentType,
+      size: file.size,
+      uploaderId: caller.userId,
+      uploaderName: caller.displayName,
+      indexStatus: extractable ? "pending" : "unsupported",
+    });
+
+    if (extractable) {
+      try {
+        await env.HISTORY_QUEUE.send({ document: true, workspaceId, attachmentId } satisfies DocumentIndexEvent);
+      } catch (err) {
+        console.error("document index enqueue failed (non-fatal)", err);
+      }
+    }
+    return json({ attachment }, 201);
+  }
+
+  const attachmentId = tail[0];
+  const sub = tail[1];
+
+  // GET /attachments/:id/download -> stream from R2
+  if (request.method === "GET" && attachmentId && sub === "download") {
+    const att = await stub.getAttachment(attachmentId);
+    if (!att) return json({ error: "attachment not found", code: "not_found" }, 404);
+    const obj = await env.ATTACHMENTS.get(attachmentKey(workspaceId, attachmentId, att.filename));
+    if (!obj) return json({ error: "file missing from storage", code: "not_found" }, 404);
+
+    const headers = new Headers();
+    obj.writeHttpMetadata(headers);
+    headers.set("content-length", String(att.size));
+    const disposition = url.searchParams.get("inline") === "1" ? "inline" : "attachment";
+    headers.set("content-disposition", `${disposition}; filename="${safeFilename(att.filename)}"`);
+    headers.set("cache-control", "private, max-age=60");
+    return new Response(obj.body, { headers });
+  }
+
+  // DELETE /attachments/:id
+  if (request.method === "DELETE" && attachmentId && !sub) {
+    if (!canWrite) return json({ error: "your role cannot delete files", code: "forbidden" }, 403);
+    const att = await stub.deleteAttachment(attachmentId);
+    if (!att) return json({ error: "attachment not found", code: "not_found" }, 404);
+    try {
+      await env.ATTACHMENTS.delete(attachmentKey(workspaceId, attachmentId, att.filename));
+    } catch (err) {
+      console.error("R2 delete failed (non-fatal)", err);
+    }
+    if (att.chunkCount > 0 && env.VECTORIZE) {
+      try {
+        await env.VECTORIZE.deleteByIds(
+          Array.from({ length: att.chunkCount }, (_, i) => `doc::${workspaceId}::${attachmentId}::${i}`),
+        );
+      } catch (err) {
+        console.error("Vectorize doc-chunk delete failed (non-fatal)", err);
+      }
+    }
+    return json({ ok: true });
+  }
+
+  return json({ error: "not found" }, 404);
+}
+
 async function handleWeekly(
   env: Env,
   stub: WorkspaceStub,
@@ -381,7 +494,7 @@ export default {
     }
 
     // Phase 4B: reminders + weekly review (nested paths).
-    const p4b = pathname.match(/^\/api\/workspace\/([^/]+)\/(reminders|weekly)(\/[^?]*)?$/);
+    const p4b = pathname.match(/^\/api\/workspace\/([^/]+)\/(reminders|weekly|attachments)(\/[^?]*)?$/);
     if (p4b) {
       const workspaceId = decodeURIComponent(p4b[1]);
       if (!WORKSPACE_ID_RE.test(workspaceId)) {
@@ -391,9 +504,11 @@ export default {
       if (caller instanceof Response) return caller;
       const stub = env.WORKSPACE_DO.get(env.WORKSPACE_DO.idFromName(workspaceId));
       const tail = (p4b[3] ?? "").split("/").filter(Boolean);
-      return p4b[2] === "reminders"
-        ? handleReminders(stub, request, caller, tail)
-        : handleWeekly(env, stub, request, workspaceId, caller, tail);
+      if (p4b[2] === "reminders") return handleReminders(stub, request, caller, tail);
+      if (p4b[2] === "attachments") {
+        return handleAttachments(env, url, request, workspaceId, stub, caller, tail);
+      }
+      return handleWeekly(env, stub, request, workspaceId, caller, tail);
     }
 
     // Workspace routes: HTTP (snapshot/summary/agent) + WebSocket.
@@ -437,13 +552,17 @@ export default {
     return new Response("Not found", { status: 404 });
   },
 
-  // Queue consumers. Phase 4A: history-index (Vectorize upserts off the mutation
-  // path). Phase 4B: workflow-events (start durable Workflows idempotently).
+  // Queue consumers. history-index: Vectorize upserts for entities (Phase 4A) +
+  // uploaded documents (Stage 1 finish), off the mutation path.
+  // workflow-events: start durable Workflows idempotently (Phase 4B).
   async queue(batch, env): Promise<void> {
     if (batch.queue === "internpulse-workflow-events") {
       await handleWorkflowEventBatch(batch as MessageBatch<WorkflowEventMessage>, env);
     } else {
-      await handleHistoryIndexBatch(batch as MessageBatch<HistoryIndexEvent>, env);
+      await handleHistoryIndexBatch(
+        batch as MessageBatch<HistoryIndexEvent | DocumentIndexEvent>,
+        env,
+      );
     }
   },
-} satisfies ExportedHandler<Env, HistoryIndexEvent | WorkflowEventMessage>;
+} satisfies ExportedHandler<Env, HistoryIndexEvent | DocumentIndexEvent | WorkflowEventMessage>;

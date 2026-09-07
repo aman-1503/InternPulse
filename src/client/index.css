@@ -719,3 +719,68 @@ button:disabled {
   color: var(--muted);
   margin-bottom: 0.2rem;
 }
+
+/* ---- Stage 1 (finish): attachments ---- */
+.workspace-title h2 {
+  margin-bottom: 0.15rem;
+}
+.dev-tag {
+  display: inline-block;
+  margin-left: 0.5rem;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #fbbf24;
+  border: 1px dashed #fbbf24;
+  border-radius: 4px;
+  padding: 0 0.3rem;
+}
+.attachments-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-bottom: 0.75rem;
+}
+.attachments-list li {
+  border-left: 2px solid var(--line);
+  padding: 0.4rem 0 0.4rem 0.6rem;
+}
+.attachment-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.attachment-main a {
+  font-weight: 600;
+}
+.attachment-meta {
+  margin-top: 0.2rem;
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.link-danger {
+  border: none;
+  background: none;
+  color: var(--danger);
+  font-size: 0.75rem;
+  padding: 0;
+  text-decoration: underline;
+}
+.badge.idx-indexed {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.badge.idx-pending {
+  color: #93c5fd;
+}
+.badge.idx-unsupported,
+.badge.idx-skipped {
+  color: var(--muted);
+}
+.badge.idx-failed {
+  color: var(--danger);
+  border-color: var(--danger);
+}

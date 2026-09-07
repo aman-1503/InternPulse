@@ -35,7 +35,10 @@ export class BlockerWorkflow extends WorkflowEntrypoint<Env, BlockerParams> {
         workspaceId,
       );
 
-    await step.sleep("wait-for-reminder", this.env.BLOCKER_REMINDER_DELAY || "1 hour");
+    await step.sleep(
+      "wait-for-reminder",
+      (this.env.BLOCKER_REMINDER_DELAY || "1 hour") as WorkflowSleepDuration,
+    );
 
     const beforeReminder = await step.do("check-before-reminder", async () => {
       const b = await workspace().getBlocker(blockerId);
@@ -68,7 +71,10 @@ export class BlockerWorkflow extends WorkflowEntrypoint<Env, BlockerParams> {
       return { usedAI: intern.usedAI && mentor.usedAI };
     });
 
-    await step.sleep("wait-for-escalation", this.env.BLOCKER_ESCALATION_DELAY || "1 day");
+    await step.sleep(
+      "wait-for-escalation",
+      (this.env.BLOCKER_ESCALATION_DELAY || "1 day") as WorkflowSleepDuration,
+    );
 
     const beforeEscalation = await step.do("check-before-escalation", async () => {
       const b = await workspace().getBlocker(blockerId);

@@ -32,7 +32,7 @@ export class WeeklyReviewWorkflow extends WorkflowEntrypoint<Env, WeeklyParams> 
       this.env.WORKSPACE_DO.get(this.env.WORKSPACE_DO.idFromName(workspaceId));
 
     const maxRounds = Math.max(1, Number(this.env.WEEKLY_MAX_ROUNDS || "3"));
-    const timeout = this.env.WEEKLY_STEP_TIMEOUT || "3 days";
+    const timeout = (this.env.WEEKLY_STEP_TIMEOUT || "3 days") as WorkflowSleepDuration;
 
     // 1. Draft.
     await step.do("draft", async () => {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useWorkspace } from "../lib/useWorkspace";
 import { PresenceBar } from "./Presence";
 import { RemindersPanel } from "./RemindersPanel";
@@ -9,8 +9,18 @@ import { FeedbackTab } from "./tabs/FeedbackTab";
 import { ActivityTab } from "./tabs/ActivityTab";
 import { AgentTab } from "./tabs/AgentTab";
 import { WeeklyTab } from "./tabs/WeeklyTab";
+import { AttachmentsTab } from "./tabs/AttachmentsTab";
 
-const TABS = ["Overview", "Board", "Blockers", "Feedback", "Activity", "Weekly", "Agent"] as const;
+const TABS = [
+  "Overview",
+  "Board",
+  "Blockers",
+  "Feedback",
+  "Activity",
+  "Weekly",
+  "Agent",
+  "Attachments",
+] as const;
 type Tab = (typeof TABS)[number];
 
 export function Workspace({
@@ -24,20 +34,38 @@ export function Workspace({
 }) {
   const ws = useWorkspace(workspaceId, identity, devRole);
   const [tab, setTab] = useState<Tab>("Overview");
+  const [projectName, setProjectName] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    fetch("/api/workspaces")
+      .then((r) => r.json() as Promise<{ workspaces?: Array<{ id: string; name: string }> }>)
+      .then((d) => {
+        if (live) setProjectName(d.workspaces?.find((w) => w.id === workspaceId)?.name ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [workspaceId]);
 
   const role = ws.you?.role ?? null;
   const canEditBoard = role === "intern" || role === "mentor";
   const openBlockers = ws.blockers.filter((b) => b.status === "OPEN").length;
+  const openReminders = ws.reminders.filter((r) => r.status === "OPEN").length;
+  const pendingWeekly = ws.weeklyReports.filter((r) => r.status !== "APPROVED").length;
 
   return (
     <div className="workspace">
       <div className="workspace-head">
-        <div>
-          <h2>{workspaceId}</h2>
+        <div className="workspace-title">
+          <h2>{projectName ?? workspaceId}</h2>
           <p className="meta">
-            you are <strong>{identity.displayName}</strong> ·{" "}
-            <span className={`badge role-${role ?? "none"}`}>{role ?? "observer"}</span>
-            {ws.schemaVersion != null && <> · schema v{ws.schemaVersion}</>}
+            <span className={`badge role-${role ?? "none"}`}>{role ?? "observer"}</span> ·{" "}
+            <strong>{identity.displayName}</strong>
+            <span className="dev-tag" title="Demo identity — not real authentication">
+              demo identity
+            </span>
           </p>
         </div>
         <div className="workspace-head-right">
@@ -65,9 +93,12 @@ export function Workspace({
         {TABS.map((t) => (
           <button key={t} className={t === tab ? "active" : ""} onClick={() => setTab(t)}>
             {t}
-            {t === "Blockers" && openBlockers > 0 && <span className="count danger">{openBlockers}</span>}
-            {t === "Weekly" && ws.weeklyReports.some((r) => r.status !== "APPROVED") && (
-              <span className="count">{ws.weeklyReports.filter((r) => r.status !== "APPROVED").length}</span>
+            {t === "Blockers" && openBlockers > 0 && (
+              <span className="count danger">{openBlockers}</span>
+            )}
+            {t === "Weekly" && pendingWeekly > 0 && <span className="count">{pendingWeekly}</span>}
+            {t === "Overview" && openReminders > 0 && (
+              <span className="count danger">{openReminders}</span>
             )}
           </button>
         ))}
@@ -84,6 +115,14 @@ export function Workspace({
         )}
         {tab === "Agent" && (
           <AgentTab workspaceId={workspaceId} identity={identity} devRole={devRole} role={role} />
+        )}
+        {tab === "Attachments" && (
+          <AttachmentsTab
+            state={ws}
+            workspaceId={workspaceId}
+            identity={identity}
+            devRole={devRole}
+          />
         )}
       </div>
     </div>

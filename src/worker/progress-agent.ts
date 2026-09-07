@@ -25,7 +25,13 @@ import {
   type Role,
 } from "../shared/protocol";
 import { buildMessages, fakeAnswer, groundedOn, renderContextBlock } from "./agent-context";
-import { MIN_SCORE, RETRIEVAL_TOP_K, renderHistoryBlock, toRetrievedItem } from "./history-index";
+import {
+  MIN_SCORE,
+  RETRIEVAL_TOP_K,
+  renderDocumentBlock,
+  renderHistoryBlock,
+  toRetrievedItem,
+} from "./history-index";
 import {
   blockerEscalationText,
   blockerReminderText,
@@ -114,19 +120,23 @@ export class ProgressAgent extends Agent<Env, AgentState> {
     const model = this.env.PROGRESS_AGENT_MODEL || DEFAULT_MODEL;
     const useFake = String(this.env.AGENT_FAKE_AI ?? "") === "1" || !this.env.AI;
 
-    // 3. Phase 4A: semantic retrieval over workspace history (retrieval only —
-    //    scoped strictly to this workspace; current state above still wins).
-    let retrieved: RetrievedHistoryItem[] = [];
+    // 3. Semantic retrieval over this workspace's history + uploaded documents
+    //    (retrieval only, scoped strictly to this workspace; current state wins).
+    //    History and documents are queried separately so a busy history can't
+    //    crowd out a relevant document (and vice versa).
+    let history: RetrievedHistoryItem[] = [];
+    let documents: RetrievedHistoryItem[] = [];
     if (!useFake && this.env.VECTORIZE) {
       try {
-        retrieved = await this.retrieveHistory(input.workspaceId, prompt);
+        ({ history, documents } = await this.retrieve(input.workspaceId, prompt));
       } catch (err) {
-        console.error("history retrieval failed (non-fatal)", err);
+        console.error("retrieval failed (non-fatal)", err);
       }
     }
+    const retrieved: RetrievedHistoryItem[] = [...history, ...documents];
 
-    // 4. Build grounded chat messages (current context primary, history secondary).
-    const messages = buildMessages(ctx, prompt, priorTurns, retrieved);
+    // 4. Build grounded chat messages (current context primary; history + docs supporting).
+    const messages = buildMessages(ctx, prompt, priorTurns, history, documents);
 
     // 5. Inference — real model, or deterministic offline stub.
     let answer: string;
@@ -165,7 +175,7 @@ export class ProgressAgent extends Agent<Env, AgentState> {
       model: useFake ? "fake-ai" : model,
       usedFakeAI: useFake,
       role: input.role,
-      groundedOn: groundedOn(ctx, retrieved.length),
+      groundedOn: groundedOn(ctx, history.length, documents.length),
       retrieved,
       conversationId: id,
     };
@@ -175,31 +185,41 @@ export class ProgressAgent extends Agent<Env, AgentState> {
    * Semantic retrieval over this workspace's history. Strictly scoped by
    * namespace AND metadata filter. Returns only a small, relevant set.
    */
-  private async retrieveHistory(
+  private async retrieve(
     workspaceId: string,
     prompt: string,
-  ): Promise<RetrievedHistoryItem[]> {
+  ): Promise<{ history: RetrievedHistoryItem[]; documents: RetrievedHistoryItem[] }> {
     const ai = this.env.AI as unknown as {
       run: (m: string, i: { text: string }) => Promise<{ data?: number[][] }>;
     };
     const embed = await ai.run(this.env.HISTORY_EMBED_MODEL, { text: prompt });
     const vector = embed?.data?.[0];
-    if (!vector || vector.length === 0) return [];
+    if (!vector || vector.length === 0) return { history: [], documents: [] };
 
-    const res = await this.env.VECTORIZE.query(vector, {
-      topK: RETRIEVAL_TOP_K,
-      namespace: workspaceId,
-      filter: { workspaceId },
-      returnMetadata: "all",
-    });
+    const base = { namespace: workspaceId, returnMetadata: "all" as const };
+    const [histRes, docRes] = await Promise.all([
+      this.env.VECTORIZE.query(vector, {
+        ...base,
+        topK: RETRIEVAL_TOP_K + 1,
+        filter: { workspaceId, entityType: { $in: ["UPDATE", "BLOCKER", "FEEDBACK"] } },
+      }),
+      this.env.VECTORIZE.query(vector, {
+        ...base,
+        topK: RETRIEVAL_TOP_K,
+        filter: { workspaceId, entityType: "DOCUMENT" },
+      }),
+    ]);
 
-    const items: RetrievedHistoryItem[] = [];
-    for (const match of res.matches ?? []) {
-      if (typeof match.score === "number" && match.score < MIN_SCORE) continue;
-      const item = toRetrievedItem(match);
-      if (item && item.entityId) items.push(item);
-    }
-    return items;
+    const keep = (res: { matches?: Array<{ score: number; metadata?: Record<string, unknown> | null }> }) => {
+      const out: RetrievedHistoryItem[] = [];
+      for (const match of res.matches ?? []) {
+        if (typeof match.score === "number" && match.score < MIN_SCORE) continue;
+        const item = toRetrievedItem(match);
+        if (item && item.entityId) out.push(item);
+      }
+      return out;
+    };
+    return { history: keep(histRes), documents: keep(docRes) };
   }
 
   // -- Phase 4B: text drafting for workflows (SUGGEST only, never mutate) ---
@@ -273,13 +293,14 @@ export class ProgressAgent extends Agent<Env, AgentState> {
       return { content: deterministicWeeklyDraft(reportingPeriod, ctx), aiGenerated: false };
     }
 
-    let retrieved: RetrievedHistoryItem[] = [];
+    let history: RetrievedHistoryItem[] = [];
+    let documents: RetrievedHistoryItem[] = [];
     try {
       if (this.env.VECTORIZE) {
-        retrieved = await this.retrieveHistory(
+        ({ history, documents } = await this.retrieve(
           workspaceId,
-          "weekly progress: accomplishments, current blockers, resolved blockers, mentor feedback, next steps",
-        );
+          "weekly progress: accomplishments, current blockers, resolved blockers, mentor feedback, project documents, next steps",
+        ));
       }
     } catch (err) {
       console.error("weekly retrieval failed (non-fatal)", err);
@@ -293,7 +314,7 @@ export class ProgressAgent extends Agent<Env, AgentState> {
             "Write a concise weekly progress report in Markdown for one internship workspace.",
             `Reporting period: ${reportingPeriod}.`,
             "Sections: ## Completed, ## In progress, ## Current open blockers, ## Historical context, ## Suggested next steps.",
-            "CURRENT WORKSPACE STATE below is authoritative. HISTORICAL CONTEXT is older background retrieved by search and may be stale.",
+            "CURRENT WORKSPACE STATE below is authoritative. HISTORICAL CONTEXT is older background retrieved by search and may be stale. DOCUMENT KNOWLEDGE is supporting reference from uploaded files.",
             "Clearly distinguish CURRENT open blockers from historical RESOLVED blockers — never present a resolved blocker as currently open.",
             "Do not invent tasks, blockers, names, dates or numbers. Do not rate anyone. Do not claim any action was taken.",
           ].join("\n"),
@@ -305,7 +326,10 @@ export class ProgressAgent extends Agent<Env, AgentState> {
             renderContextBlock(ctx),
             "",
             "HISTORICAL CONTEXT (retrieved; may be outdated):",
-            renderHistoryBlock(retrieved, ctx.generatedAt),
+            renderHistoryBlock(history, ctx.generatedAt),
+            "",
+            "DOCUMENT KNOWLEDGE (uploaded files; supporting reference):",
+            renderDocumentBlock(documents, ctx.generatedAt),
           ].join("\n"),
         },
       ]);
