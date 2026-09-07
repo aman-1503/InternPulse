@@ -8,6 +8,7 @@ import { isoWeek } from "./reminders";
 import {
   MAX_ATTACHMENT_BYTES,
   attachmentKey,
+  attachmentsBucket,
   isExtractable,
   safeFilename,
 } from "./documents";
@@ -245,6 +246,12 @@ async function handleAttachments(
   caller: Caller,
   tail: string[],
 ): Promise<Response> {
+  // R2 is optional: if the bucket isn't configured (e.g. R2 not yet enabled on
+  // the account) the rest of InternPulse still works — attachments are just off.
+  const bucket = attachmentsBucket(env);
+  if (!bucket) {
+    return json({ error: "file storage (R2) is not configured", code: "unavailable" }, 503);
+  }
   const canWrite = caller.role === "intern" || caller.role === "mentor";
 
   // GET /attachments -> list
@@ -273,7 +280,7 @@ async function handleAttachments(
     const contentType = file.type || "application/octet-stream";
     const key = attachmentKey(workspaceId, attachmentId, filename);
 
-    await env.ATTACHMENTS.put(key, file.stream(), { httpMetadata: { contentType } });
+    await bucket.put(key, file.stream(), { httpMetadata: { contentType } });
 
     const extractable = isExtractable(filename, contentType);
     const attachment = await stub.createAttachment({
@@ -303,7 +310,7 @@ async function handleAttachments(
   if (request.method === "GET" && attachmentId && sub === "download") {
     const att = await stub.getAttachment(attachmentId);
     if (!att) return json({ error: "attachment not found", code: "not_found" }, 404);
-    const obj = await env.ATTACHMENTS.get(attachmentKey(workspaceId, attachmentId, att.filename));
+    const obj = await bucket.get(attachmentKey(workspaceId, attachmentId, att.filename));
     if (!obj) return json({ error: "file missing from storage", code: "not_found" }, 404);
 
     const headers = new Headers();
@@ -321,7 +328,7 @@ async function handleAttachments(
     const att = await stub.deleteAttachment(attachmentId);
     if (!att) return json({ error: "attachment not found", code: "not_found" }, 404);
     try {
-      await env.ATTACHMENTS.delete(attachmentKey(workspaceId, attachmentId, att.filename));
+      await bucket.delete(attachmentKey(workspaceId, attachmentId, att.filename));
     } catch (err) {
       console.error("R2 delete failed (non-fatal)", err);
     }

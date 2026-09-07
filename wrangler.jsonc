@@ -115,13 +115,13 @@
   ],
 
   // Organization-wide relational data (users, teams, workspaces, memberships).
-  // database_id is a placeholder for local dev; replace when a real D1 database
-  // is provisioned with `wrangler d1 create internpulse`.
+  // Local dev uses a simulated DB; `database_id` is the real one created with
+  // `wrangler d1 create internpulse` (used by `--remote` / deploy).
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "internpulse",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "9760acc5-31e9-49f1-bb9f-773ed8096cfe",
       "migrations_dir": "migrations"
     }
   ]

@@ -42,6 +42,15 @@ export function safeFilename(name: string): string {
   return cleaned || "file";
 }
 
+/**
+ * The attachments bucket, or undefined when R2 isn't configured (e.g. R2 not
+ * enabled on the account). Attachments degrade to unavailable; the rest of
+ * InternPulse is unaffected.
+ */
+export function attachmentsBucket(env: Env): R2Bucket | undefined {
+  return (env as unknown as { ATTACHMENTS?: R2Bucket }).ATTACHMENTS;
+}
+
 /** R2 object key — scoped so workspace files can never collide. */
 export function attachmentKey(workspaceId: string, attachmentId: string, filename: string): string {
   return `workspace/${workspaceId}/${attachmentId}/${safeFilename(filename)}`;

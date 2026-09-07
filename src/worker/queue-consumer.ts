@@ -17,6 +17,7 @@ import { toMetadata, vectorId } from "./history-index";
 import {
   MAX_CHUNKS,
   attachmentKey,
+  attachmentsBucket,
   chunkText,
   isPlainText,
 } from "./documents";
@@ -122,6 +123,13 @@ async function indexDocument(
   const setStatus = (s: Parameters<typeof stub.setAttachmentIndex>[1], n: number) =>
     stub.setAttachmentIndex(evt.attachmentId, s, n);
 
+  const bucket = attachmentsBucket(env);
+  if (!bucket) {
+    await setStatus("failed", 0);
+    message.ack();
+    return;
+  }
+
   try {
     const att = await stub.getAttachment(evt.attachmentId);
     if (!att) {
@@ -141,7 +149,7 @@ async function indexDocument(
     }
 
     const key = attachmentKey(evt.workspaceId, evt.attachmentId, att.filename);
-    const obj = await env.ATTACHMENTS.get(key);
+    const obj = await bucket.get(key);
     if (!obj) {
       await setStatus("failed", 0);
       message.ack();
