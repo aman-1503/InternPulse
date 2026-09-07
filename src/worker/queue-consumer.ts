@@ -10,6 +10,7 @@
 import {
   INDEXABLE_ENTITY_TYPES,
   type HistoryIndexEvent,
+  type WorkflowEventMessage,
 } from "../shared/protocol";
 import { toMetadata, vectorId } from "./history-index";
 
@@ -79,6 +80,52 @@ export async function handleHistoryIndexBatch(
       message.ack();
     } catch (err) {
       console.error(`history-index: ${evt.entityType} ${evt.entityId} failed, retrying`, err);
+      message.retry();
+    }
+  }
+}
+
+/**
+ * Phase 4B: start durable Workflows from a queued reference event. Deterministic
+ * instance ids make the start idempotent — a duplicate message (retry, or a
+ * second blocker.created) is a safe no-op.
+ */
+export async function handleWorkflowEventBatch(
+  batch: MessageBatch<WorkflowEventMessage>,
+  env: Env,
+): Promise<void> {
+  for (const message of batch.messages) {
+    const evt = message.body;
+    try {
+      if (evt?.kind !== "blocker.workflow.start") {
+        console.warn("workflow-events: unknown message, dropping", evt);
+        message.ack();
+        continue;
+      }
+      if (!WORKSPACE_ID_RE.test(evt.workspaceId ?? "") || !evt.blockerId) {
+        console.warn("workflow-events: malformed, dropping", evt);
+        message.ack();
+        continue;
+      }
+
+      const id = `blocker-${evt.blockerId}`;
+      try {
+        await env.BLOCKER_WORKFLOW.create({
+          id,
+          params: { workspaceId: evt.workspaceId, blockerId: evt.blockerId },
+        });
+        console.log(`workflow-events: started ${id}`);
+      } catch (err) {
+        // Deterministic id already used => the workflow is already running.
+        if (/exist/i.test(String((err as Error)?.message ?? err))) {
+          console.log(`workflow-events: ${id} already running (ok)`);
+        } else {
+          throw err;
+        }
+      }
+      message.ack();
+    } catch (err) {
+      console.error("workflow-events: failed, retrying", err);
       message.retry();
     }
   }

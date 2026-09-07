@@ -17,3 +17,11 @@ AGENT_FAKE_AI=1
 # Optional: override the Workers AI model ids (defaults set in wrangler.jsonc).
 # PROGRESS_AGENT_MODEL="@cf/meta/llama-3.1-8b-instruct-fast"
 # HISTORY_EMBED_MODEL="@cf/baai/bge-base-en-v1.5"   # 768-dim; must match the Vectorize index
+
+# --- Phase 4B: Workflow timing (read inside the workflow run(); NOT production values) ---
+# Use short values locally so blocker reminder/escalation tests run in seconds.
+# Duration strings: "<n> seconds|minutes|hours|days".
+BLOCKER_REMINDER_DELAY=3 seconds
+BLOCKER_ESCALATION_DELAY=20 seconds
+WEEKLY_STEP_TIMEOUT=120 seconds
+WEEKLY_MAX_ROUNDS=3

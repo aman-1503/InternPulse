@@ -2,7 +2,9 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "internpulse",
   "main": "src/worker/index.ts",
-  "compatibility_date": "2025-01-01",
+  // Bumped for Phase 4B: step.waitForEvent (human-in-the-loop Workflows) needs a
+  // post-May-2025 runtime.
+  "compatibility_date": "2025-09-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
@@ -21,7 +23,15 @@
     "AGENT_FAKE_AI": "",
     // Workers AI embedding model for the Phase 4A history index. Its output
     // dimension (768) is locked into the Vectorize index at creation time.
-    "HISTORY_EMBED_MODEL": "@cf/baai/bge-base-en-v1.5"
+    "HISTORY_EMBED_MODEL": "@cf/baai/bge-base-en-v1.5",
+
+    // Phase 4B workflow timing — read INSIDE the workflow run() so timing is
+    // config-driven, never baked in. Production values are not locked this phase.
+    // Override with short values in .dev.vars for fast local tests.
+    "BLOCKER_REMINDER_DELAY": "1 hour",
+    "BLOCKER_ESCALATION_DELAY": "1 day",
+    "WEEKLY_STEP_TIMEOUT": "3 days",
+    "WEEKLY_MAX_ROUNDS": "3"
   },
 
   // Phase 4A: long-term retrieval memory. Vectorize is retrieval ONLY, never a
@@ -37,7 +47,10 @@
   // `wrangler dev` (no provisioning needed until `wrangler deploy`).
   "queues": {
     "producers": [
-      { "binding": "HISTORY_QUEUE", "queue": "internpulse-history-index" }
+      { "binding": "HISTORY_QUEUE", "queue": "internpulse-history-index" },
+      // Phase 4B: async hand-off for starting durable Workflows from the DO
+      // mutation path without blocking the ack.
+      { "binding": "WORKFLOW_QUEUE", "queue": "internpulse-workflow-events" }
     ],
     "consumers": [
       {
@@ -45,9 +58,31 @@
         "max_batch_size": 10,
         "max_batch_timeout": 5,
         "max_retries": 3
+      },
+      {
+        "queue": "internpulse-workflow-events",
+        "max_batch_size": 5,
+        "max_batch_timeout": 2,
+        "max_retries": 3
       }
     ]
   },
+
+  // Phase 4B: long-running human-in-the-loop processes. Blocker reminder/
+  // escalation, and the weekly progress review. Classes are exported from
+  // src/worker/index.ts; Workflows run locally in `wrangler dev`.
+  "workflows": [
+    {
+      "name": "internpulse-blocker",
+      "binding": "BLOCKER_WORKFLOW",
+      "class_name": "BlockerWorkflow"
+    },
+    {
+      "name": "internpulse-weekly",
+      "binding": "WEEKLY_WORKFLOW",
+      "class_name": "WeeklyReviewWorkflow"
+    }
+  ],
 
   // React SPA is built to dist/client and served by the Workers assets runtime.
   // Unknown paths fall back to index.html so client-side routing works later.

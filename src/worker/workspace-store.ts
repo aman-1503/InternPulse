@@ -16,11 +16,17 @@ import {
   type Blocker,
   type Feedback,
   type ProgressUpdate,
+  type Reminder,
+  type ReminderEntityType,
+  type ReminderType,
+  type Role,
   type Task,
   type TaskPatch,
   type TaskPriority,
   type TaskStatus,
   type UpdateType,
+  type WeeklyReport,
+  type WeeklyReportStatus,
   type WorkspaceSummaryStats,
   WS_PROTOCOL_VERSION,
 } from "../shared/protocol";
@@ -47,10 +53,53 @@ export class WorkspaceStore {
     `);
 
     const version = Number(this.meta("schema_version") ?? "0");
-    if (version < 2) {
-      this.migrateToV2();
+    if (version < 2) this.migrateToV2();
+    if (version < 3) this.migrateToV3();
+    if (version < WS_PROTOCOL_VERSION) {
       this.setMeta("schema_version", String(WS_PROTOCOL_VERSION));
     }
+  }
+
+  /** Phase 4B: workspace-local reminders + weekly reports (additive). */
+  private migrateToV3(): void {
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS reminders (
+        id                TEXT PRIMARY KEY,
+        recipient_user_id TEXT,
+        recipient_role    TEXT NOT NULL CHECK (recipient_role IN ('intern','mentor','manager')),
+        type              TEXT NOT NULL,
+        entity_type       TEXT NOT NULL,
+        entity_id         TEXT NOT NULL,
+        message           TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','ACKNOWLEDGED')),
+        created_at        INTEGER NOT NULL,
+        acknowledged_at   INTEGER,
+        snoozed_until     INTEGER
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_reminders_dedup
+        ON reminders (entity_type, entity_id, type, recipient_role);
+      CREATE INDEX IF NOT EXISTS idx_reminders_inbox
+        ON reminders (recipient_role, status);
+
+      CREATE TABLE IF NOT EXISTS weekly_reports (
+        id                   TEXT PRIMARY KEY,
+        reporting_period     TEXT NOT NULL,
+        status               TEXT NOT NULL DEFAULT 'DRAFT'
+                               CHECK (status IN ('DRAFT','SUBMITTED','CHANGES_REQUESTED','APPROVED')),
+        draft_content        TEXT NOT NULL DEFAULT '',
+        final_content        TEXT,
+        mentor_feedback      TEXT,
+        round                INTEGER NOT NULL DEFAULT 0,
+        ai_generated         INTEGER NOT NULL DEFAULT 1,
+        created_by           TEXT NOT NULL,
+        workflow_instance_id TEXT,
+        created_at           INTEGER NOT NULL,
+        submitted_at         INTEGER,
+        mentor_reviewed_at   INTEGER,
+        finalized_at         INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_weekly_status ON weekly_reports (status);
+    `);
   }
 
   private migrateToV2(): void {
@@ -441,6 +490,167 @@ export class WorkspaceStore {
         : null,
     };
   }
+
+  // -- reminders (Phase 4B) --------------------------------------------
+
+  /**
+   * Idempotent: the (entity_type, entity_id, type, recipient_role) unique index
+   * means re-running a workflow step never creates a duplicate reminder.
+   * Returns the reminder if this call created it, or null if it already existed.
+   */
+  createReminder(input: {
+    recipientUserId: string | null;
+    recipientRole: Role;
+    type: ReminderType;
+    entityType: ReminderEntityType;
+    entityId: string;
+    message: string;
+  }): Reminder | null {
+    const id = crypto.randomUUID();
+    const createdAt = Date.now();
+    const cur = this.sql.exec(
+      `INSERT OR IGNORE INTO reminders
+         (id, recipient_user_id, recipient_role, type, entity_type, entity_id, message, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)`,
+      id,
+      input.recipientUserId,
+      input.recipientRole,
+      input.type,
+      input.entityType,
+      input.entityId,
+      input.message,
+      createdAt,
+    );
+    if (cur.rowsWritten === 0) return null;
+    return this.getReminder(id);
+  }
+
+  getReminder(id: string): Reminder | null {
+    const row = this.sql.exec("SELECT * FROM reminders WHERE id = ?", id).toArray()[0];
+    return row ? toReminder(row) : null;
+  }
+
+  /** Reminders addressed to a user: their role's reminders + any pinned to them. */
+  listRemindersFor(userId: string, role: Role | null): Reminder[] {
+    if (!role) return [];
+    return this.sql
+      .exec(
+        `SELECT * FROM reminders
+          WHERE recipient_role = ?
+            AND (recipient_user_id IS NULL OR recipient_user_id = ?)
+          ORDER BY created_at DESC LIMIT 100`,
+        role,
+        userId,
+      )
+      .toArray()
+      .map(toReminder);
+  }
+
+  acknowledgeReminder(id: string, userId: string, role: Role | null): Reminder | null {
+    const r = this.getReminder(id);
+    if (!r) return null;
+    if (r.recipientRole !== role) return null; // not yours to ack
+    if (r.recipientUserId && r.recipientUserId !== userId) return null;
+    if (r.status === "ACKNOWLEDGED") return r; // idempotent
+    this.sql.exec(
+      "UPDATE reminders SET status = 'ACKNOWLEDGED', acknowledged_at = ? WHERE id = ?",
+      Date.now(),
+      id,
+    );
+    return this.getReminder(id);
+  }
+
+  // -- weekly reports (Phase 4B) -------------------------------------
+
+  /** Idempotent per period: an existing non-APPROVED report for the period is returned as-is. */
+  createWeeklyReport(input: {
+    reportingPeriod: string;
+    createdBy: string;
+  }): { report: WeeklyReport; created: boolean } {
+    const existing = this.sql
+      .exec(
+        "SELECT * FROM weekly_reports WHERE reporting_period = ? AND status != 'APPROVED' ORDER BY created_at DESC LIMIT 1",
+        input.reportingPeriod,
+      )
+      .toArray()[0];
+    if (existing) return { report: toWeekly(existing), created: false };
+
+    const id = crypto.randomUUID();
+    this.sql.exec(
+      `INSERT INTO weekly_reports (id, reporting_period, status, created_by, created_at)
+       VALUES (?, ?, 'DRAFT', ?, ?)`,
+      id,
+      input.reportingPeriod,
+      input.createdBy,
+      Date.now(),
+    );
+    return { report: this.getWeeklyReport(id)!, created: true };
+  }
+
+  getWeeklyReport(id: string): WeeklyReport | null {
+    const row = this.sql.exec("SELECT * FROM weekly_reports WHERE id = ?", id).toArray()[0];
+    return row ? toWeekly(row) : null;
+  }
+
+  listWeeklyReports(limit = 50): WeeklyReport[] {
+    return this.sql
+      .exec("SELECT * FROM weekly_reports ORDER BY created_at DESC LIMIT ?", limit)
+      .toArray()
+      .map(toWeekly);
+  }
+
+  setWeeklyWorkflowInstance(id: string, instanceId: string): void {
+    this.sql.exec("UPDATE weekly_reports SET workflow_instance_id = ? WHERE id = ?", instanceId, id);
+  }
+
+  /** Edit the draft. Only meaningful while DRAFT or CHANGES_REQUESTED (caller enforces). */
+  updateWeeklyDraft(id: string, draftContent: string, aiGenerated?: boolean): WeeklyReport | null {
+    if (!this.getWeeklyReport(id)) return null;
+    if (aiGenerated === undefined) {
+      this.sql.exec("UPDATE weekly_reports SET draft_content = ? WHERE id = ?", draftContent, id);
+    } else {
+      this.sql.exec(
+        "UPDATE weekly_reports SET draft_content = ?, ai_generated = ? WHERE id = ?",
+        draftContent,
+        aiGenerated ? 1 : 0,
+        id,
+      );
+    }
+    return this.getWeeklyReport(id);
+  }
+
+  setWeeklyStatus(
+    id: string,
+    status: WeeklyReportStatus,
+    extra: { mentorFeedback?: string | null; round?: number } = {},
+  ): WeeklyReport | null {
+    const r = this.getWeeklyReport(id);
+    if (!r) return null;
+    const now = Date.now();
+    const sets: string[] = ["status = ?"];
+    const vals: SqlStorageValue[] = [status];
+    if (status === "SUBMITTED") {
+      sets.push("submitted_at = ?");
+      vals.push(now);
+    }
+    if (status === "CHANGES_REQUESTED") {
+      sets.push("mentor_reviewed_at = ?");
+      vals.push(now);
+      sets.push("mentor_feedback = ?");
+      vals.push(extra.mentorFeedback ?? null);
+    }
+    if (status === "APPROVED") {
+      sets.push("mentor_reviewed_at = ?", "finalized_at = ?", "final_content = draft_content");
+      vals.push(now, now);
+    }
+    if (extra.round !== undefined) {
+      sets.push("round = ?");
+      vals.push(extra.round);
+    }
+    vals.push(id);
+    this.sql.exec(`UPDATE weekly_reports SET ${sets.join(", ")} WHERE id = ?`, ...vals);
+    return this.getWeeklyReport(id);
+  }
 }
 
 // -- row -> domain mappers ---------------------------------------------
@@ -502,5 +712,39 @@ function toActivity(r: Row): ActivityEntry {
     entityId: r.entity_id === null ? null : String(r.entity_id),
     metadata: r.metadata === null ? null : (JSON.parse(String(r.metadata)) as Record<string, unknown>),
     createdAt: Number(r.created_at),
+  };
+}
+
+function toReminder(r: Row): Reminder {
+  return {
+    id: String(r.id),
+    recipientUserId: r.recipient_user_id === null ? null : String(r.recipient_user_id),
+    recipientRole: String(r.recipient_role) as Role,
+    type: String(r.type) as ReminderType,
+    entityType: String(r.entity_type) as ReminderEntityType,
+    entityId: String(r.entity_id),
+    message: String(r.message),
+    status: String(r.status) as Reminder["status"],
+    createdAt: Number(r.created_at),
+    acknowledgedAt: r.acknowledged_at === null ? null : Number(r.acknowledged_at),
+    snoozedUntil: r.snoozed_until === null ? null : Number(r.snoozed_until),
+  };
+}
+
+function toWeekly(r: Row): WeeklyReport {
+  return {
+    id: String(r.id),
+    reportingPeriod: String(r.reporting_period),
+    status: String(r.status) as WeeklyReportStatus,
+    draftContent: String(r.draft_content ?? ""),
+    finalContent: r.final_content === null ? null : String(r.final_content),
+    mentorFeedback: r.mentor_feedback === null ? null : String(r.mentor_feedback),
+    round: Number(r.round ?? 0),
+    aiGenerated: Number(r.ai_generated ?? 1) === 1,
+    createdBy: String(r.created_by),
+    createdAt: Number(r.created_at),
+    submittedAt: r.submitted_at === null ? null : Number(r.submitted_at),
+    mentorReviewedAt: r.mentor_reviewed_at === null ? null : Number(r.mentor_reviewed_at),
+    finalizedAt: r.finalized_at === null ? null : Number(r.finalized_at),
   };
 }

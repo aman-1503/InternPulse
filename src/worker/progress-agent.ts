@@ -24,8 +24,13 @@ import {
   type RetrievedHistoryItem,
   type Role,
 } from "../shared/protocol";
-import { buildMessages, fakeAnswer, groundedOn } from "./agent-context";
-import { MIN_SCORE, RETRIEVAL_TOP_K, toRetrievedItem } from "./history-index";
+import { buildMessages, fakeAnswer, groundedOn, renderContextBlock } from "./agent-context";
+import { MIN_SCORE, RETRIEVAL_TOP_K, renderHistoryBlock, toRetrievedItem } from "./history-index";
+import {
+  blockerEscalationText,
+  blockerReminderText,
+  deterministicWeeklyDraft,
+} from "./reminders";
 
 const DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 const MAX_OUTPUT_TOKENS = 512;
@@ -195,6 +200,121 @@ export class ProgressAgent extends Agent<Env, AgentState> {
       if (item && item.entityId) items.push(item);
     }
     return items;
+  }
+
+  // -- Phase 4B: text drafting for workflows (SUGGEST only, never mutate) ---
+
+  private useFake(): boolean {
+    return String(this.env.AGENT_FAKE_AI ?? "") === "1" || !this.env.AI;
+  }
+
+  private async chat(messages: Array<{ role: string; content: string }>): Promise<string> {
+    const ai = this.env.AI as { run: (m: string, i: unknown) => Promise<{ response?: string }> };
+    const model = this.env.PROGRESS_AGENT_MODEL || DEFAULT_MODEL;
+    const out = await ai.run(model, { messages, max_tokens: MAX_OUTPUT_TOKENS });
+    return (out?.response ?? "").trim();
+  }
+
+  /**
+   * One-sentence reminder/escalation wording. Falls back to a deterministic
+   * template if Workers AI is unavailable — a reminder is never skipped.
+   */
+  async draftBlockerReminder(
+    workspaceId: string,
+    blockerId: string,
+    audience: "intern" | "mentor" | "manager",
+  ): Promise<{ text: string; usedAI: boolean }> {
+    const stub = this.env.WORKSPACE_DO.get(this.env.WORKSPACE_DO.idFromName(workspaceId));
+    const blocker = await stub.getBlocker(blockerId);
+    if (!blocker) {
+      return { text: "A blocker referenced by a reminder no longer exists.", usedAI: false };
+    }
+    const template =
+      audience === "manager"
+        ? blockerEscalationText(blocker)
+        : blockerReminderText(blocker, audience);
+
+    if (this.useFake()) return { text: template, usedAI: false };
+    try {
+      const text = await this.chat([
+        {
+          role: "system",
+          content:
+            "Write ONE concise in-app reminder sentence. Do not claim any action was taken or that the blocker was resolved. No greeting, no sign-off.",
+        },
+        {
+          role: "user",
+          content: `Audience: ${audience}. Blocker (status ${blocker.status}, ${Math.max(
+            0,
+            Math.floor((Date.now() - blocker.createdAt) / 86_400_000),
+          )}d old): ${blocker.description}`,
+        },
+      ]);
+      return text ? { text, usedAI: true } : { text: template, usedAI: false };
+    } catch (err) {
+      console.error("draftBlockerReminder AI failed, using template", err);
+      return { text: template, usedAI: false };
+    }
+  }
+
+  /**
+   * Weekly report draft: current authoritative context + RAG history. On AI
+   * failure, returns a clearly-marked deterministic draft (aiGenerated:false).
+   */
+  async draftWeeklyReport(
+    workspaceId: string,
+    reportingPeriod: string,
+  ): Promise<{ content: string; aiGenerated: boolean }> {
+    this.ensureSchema();
+    const stub = this.env.WORKSPACE_DO.get(this.env.WORKSPACE_DO.idFromName(workspaceId));
+    const ctx: AgentContext = await stub.getAgentContext(workspaceId, null, "Weekly review");
+
+    if (this.useFake()) {
+      return { content: deterministicWeeklyDraft(reportingPeriod, ctx), aiGenerated: false };
+    }
+
+    let retrieved: RetrievedHistoryItem[] = [];
+    try {
+      if (this.env.VECTORIZE) {
+        retrieved = await this.retrieveHistory(
+          workspaceId,
+          "weekly progress: accomplishments, current blockers, resolved blockers, mentor feedback, next steps",
+        );
+      }
+    } catch (err) {
+      console.error("weekly retrieval failed (non-fatal)", err);
+    }
+
+    try {
+      const content = await this.chat([
+        {
+          role: "system",
+          content: [
+            "Write a concise weekly progress report in Markdown for one internship workspace.",
+            `Reporting period: ${reportingPeriod}.`,
+            "Sections: ## Completed, ## In progress, ## Current open blockers, ## Historical context, ## Suggested next steps.",
+            "CURRENT WORKSPACE STATE below is authoritative. HISTORICAL CONTEXT is older background retrieved by search and may be stale.",
+            "Clearly distinguish CURRENT open blockers from historical RESOLVED blockers — never present a resolved blocker as currently open.",
+            "Do not invent tasks, blockers, names, dates or numbers. Do not rate anyone. Do not claim any action was taken.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: [
+            "CURRENT WORKSPACE STATE (authoritative):",
+            renderContextBlock(ctx),
+            "",
+            "HISTORICAL CONTEXT (retrieved; may be outdated):",
+            renderHistoryBlock(retrieved, ctx.generatedAt),
+          ].join("\n"),
+        },
+      ]);
+      if (!content) throw new Error("empty draft");
+      return { content, aiGenerated: true };
+    } catch (err) {
+      console.error("draftWeeklyReport AI failed, using deterministic draft", err);
+      return { content: deterministicWeeklyDraft(reportingPeriod, ctx), aiGenerated: false };
+    }
   }
 }
 

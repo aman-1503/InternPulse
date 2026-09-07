@@ -579,3 +579,143 @@ button:disabled {
 .agent-input textarea {
   flex: 1;
 }
+
+/* ---- Phase 4B: reminders + weekly ---- */
+.workspace-head-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.reminders {
+  position: relative;
+}
+.reminders-badge {
+  font-size: 0.78rem;
+  padding: 0.35rem 0.6rem;
+}
+.reminders-badge.has-items {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.reminders-drop {
+  position: absolute;
+  right: 0;
+  top: 110%;
+  z-index: 20;
+  width: min(360px, 80vw);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+.reminder-item {
+  border-left: 2px solid var(--accent);
+  padding: 0.3rem 0.5rem;
+  background: var(--panel-2);
+  border-radius: 6px;
+}
+.reminder-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+.reminder-msg {
+  font-size: 0.85rem;
+}
+.reminder-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.35rem;
+}
+.reminder-foot button {
+  font-size: 0.72rem;
+  padding: 0.15rem 0.45rem;
+}
+.acked-note {
+  text-align: center;
+}
+.badge.type-BLOCKER_ESCALATION,
+.badge.warn {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.weekly-bar {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+.weekly-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+.weekly-chip {
+  font-size: 0.78rem;
+  padding: 0.3rem 0.5rem;
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+.weekly-chip.active {
+  border-color: var(--accent);
+}
+.badge.status-DRAFT {
+  color: var(--muted);
+}
+.badge.status-SUBMITTED {
+  color: #93c5fd;
+}
+.badge.status-CHANGES_REQUESTED {
+  color: #fbbf24;
+}
+.badge.status-APPROVED {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.report-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+  margin-bottom: 0.5rem;
+}
+.report-editor,
+.report-view {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.6rem;
+}
+.report-view {
+  max-height: 460px;
+  overflow-y: auto;
+  margin: 0;
+}
+.report-review {
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.6rem;
+}
+.report-review label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 0.2rem;
+}

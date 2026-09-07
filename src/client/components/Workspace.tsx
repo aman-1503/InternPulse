@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { useWorkspace } from "../lib/useWorkspace";
 import { PresenceBar } from "./Presence";
+import { RemindersPanel } from "./RemindersPanel";
 import { Board } from "./board/Board";
 import { OverviewTab } from "./tabs/OverviewTab";
 import { BlockersTab } from "./tabs/BlockersTab";
 import { FeedbackTab } from "./tabs/FeedbackTab";
 import { ActivityTab } from "./tabs/ActivityTab";
 import { AgentTab } from "./tabs/AgentTab";
+import { WeeklyTab } from "./tabs/WeeklyTab";
 
-const TABS = ["Overview", "Board", "Blockers", "Feedback", "Activity", "Agent"] as const;
+const TABS = ["Overview", "Board", "Blockers", "Feedback", "Activity", "Weekly", "Agent"] as const;
 type Tab = (typeof TABS)[number];
 
 export function Workspace({
@@ -38,7 +40,15 @@ export function Workspace({
             {ws.schemaVersion != null && <> · schema v{ws.schemaVersion}</>}
           </p>
         </div>
-        <PresenceBar presence={ws.presence} status={ws.status} />
+        <div className="workspace-head-right">
+          <RemindersPanel
+            reminders={ws.reminders}
+            workspaceId={workspaceId}
+            identity={identity}
+            devRole={devRole}
+          />
+          <PresenceBar presence={ws.presence} status={ws.status} />
+        </div>
       </div>
 
       {ws.status !== "open" && (
@@ -56,6 +66,9 @@ export function Workspace({
           <button key={t} className={t === tab ? "active" : ""} onClick={() => setTab(t)}>
             {t}
             {t === "Blockers" && openBlockers > 0 && <span className="count danger">{openBlockers}</span>}
+            {t === "Weekly" && ws.weeklyReports.some((r) => r.status !== "APPROVED") && (
+              <span className="count">{ws.weeklyReports.filter((r) => r.status !== "APPROVED").length}</span>
+            )}
           </button>
         ))}
       </nav>
@@ -66,6 +79,9 @@ export function Workspace({
         {tab === "Blockers" && <BlockersTab state={ws} actions={ws.actions} />}
         {tab === "Feedback" && <FeedbackTab state={ws} actions={ws.actions} />}
         {tab === "Activity" && <ActivityTab state={ws} />}
+        {tab === "Weekly" && (
+          <WeeklyTab state={ws} workspaceId={workspaceId} identity={identity} devRole={devRole} />
+        )}
         {tab === "Agent" && (
           <AgentTab workspaceId={workspaceId} identity={identity} devRole={devRole} role={role} />
         )}

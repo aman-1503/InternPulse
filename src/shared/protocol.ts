@@ -8,7 +8,7 @@
  */
 
 /** Bump when WS message shapes or the DO SQLite schema change incompatibly. */
-export const WS_PROTOCOL_VERSION = 2;
+export const WS_PROTOCOL_VERSION = 3;
 
 export type Role = "intern" | "mentor" | "manager";
 
@@ -183,7 +183,71 @@ export interface WorkspaceSnapshot {
   feedback: Feedback[];
   activity: ActivityEntry[];
   presence: PresenceState;
+  /** Phase 4B: reminders addressed to the connecting user (by role, or directly). */
+  reminders: Reminder[];
+  /** Phase 4B: weekly reports visible to the connecting user. */
+  weeklyReports: WeeklyReport[];
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4B: reminders / escalation (workspace-local; Workflows drive lifecycle)
+// ---------------------------------------------------------------------------
+
+export type ReminderStatus = "OPEN" | "ACKNOWLEDGED";
+
+export type ReminderType =
+  | "BLOCKER_REMINDER"
+  | "BLOCKER_ESCALATION"
+  | "REPORT_SUBMITTED"
+  | "REPORT_CHANGES_REQUESTED"
+  | "REPORT_APPROVED";
+
+export type ReminderEntityType = "BLOCKER" | "WEEKLY_REPORT";
+
+export interface Reminder {
+  id: string;
+  recipientUserId: string | null;
+  recipientRole: Role;
+  type: ReminderType;
+  entityType: ReminderEntityType;
+  entityId: string;
+  message: string;
+  status: ReminderStatus;
+  createdAt: number;
+  acknowledgedAt: number | null;
+  snoozedUntil: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4B: weekly progress review (workspace-local; a Workflow drives it)
+// ---------------------------------------------------------------------------
+
+export type WeeklyReportStatus = "DRAFT" | "SUBMITTED" | "CHANGES_REQUESTED" | "APPROVED";
+
+export interface WeeklyReport {
+  id: string;
+  reportingPeriod: string;
+  status: WeeklyReportStatus;
+  draftContent: string;
+  finalContent: string | null;
+  mentorFeedback: string | null;
+  round: number;
+  aiGenerated: boolean;
+  createdBy: string;
+  createdAt: number;
+  submittedAt: number | null;
+  mentorReviewedAt: number | null;
+  finalizedAt: number | null;
+}
+
+export type WeeklyReviewDecision = "APPROVE" | "REQUEST_CHANGES";
+
+/** Message shapes carried on the internpulse-workflow-events queue. */
+export type WorkflowEventMessage = {
+  kind: "blocker.workflow.start";
+  workspaceId: string;
+  blockerId: string;
+};
 
 // ---------------------------------------------------------------------------
 // Progress Agent (Phase 3)
@@ -344,6 +408,9 @@ export type ServerMessage =
   | { type: "feedback.created"; feedback: Feedback }
   | { type: "activity.created"; activity: ActivityEntry }
   | { type: "presence.updated"; presence: PresenceState }
+  | { type: "reminder.created"; reminder: Reminder }
+  | { type: "reminder.updated"; reminder: Reminder }
+  | { type: "weekly.updated"; report: WeeklyReport }
   | { type: "ack"; requestId: string; duplicate?: boolean }
   | { type: "error"; message: string; code?: string; requestId?: string }
   | { type: "pong"; t: number };

@@ -21,9 +21,16 @@ import { blockerText, feedbackText, updateText } from "./history-index";
 import { WorkspaceStore } from "./workspace-store";
 import type {
   AgentContext,
+  Blocker,
   HistoryIndexEvent,
   IndexableEntity,
   IndexableEntityType,
+  Reminder,
+  ReminderEntityType,
+  ReminderType,
+  WeeklyReport,
+  WeeklyReportStatus,
+  WorkflowEventMessage,
 } from "../shared/protocol";
 
 /** Per-connection identity + role + workspace. Stored on the hibernatable socket. */
@@ -163,6 +170,82 @@ export class WorkspaceDO extends DurableObject<Env> {
     };
   }
 
+  // -- RPC: Phase 4B workflows (BlockerWorkflow / WeeklyReviewWorkflow) ---
+  // Workflows re-read authoritative state through these on every step; they
+  // never trust their own payloads. Not reachable from the public API.
+
+  async getBlocker(blockerId: string): Promise<Blocker | null> {
+    return this.store.getBlocker(blockerId);
+  }
+
+  async createReminder(input: {
+    recipientUserId: string | null;
+    recipientRole: Role;
+    type: ReminderType;
+    entityType: ReminderEntityType;
+    entityId: string;
+    message: string;
+  }): Promise<{ reminder: Reminder | null; created: boolean }> {
+    const reminder = this.store.createReminder(input);
+    if (reminder) this.broadcast({ type: "reminder.created", reminder });
+    return { reminder, created: reminder !== null };
+  }
+
+  async listReminders(userId: string, role: Role | null): Promise<Reminder[]> {
+    return this.store.listRemindersFor(userId, role);
+  }
+
+  async acknowledgeReminder(
+    id: string,
+    userId: string,
+    role: Role | null,
+  ): Promise<Reminder | null> {
+    const reminder = this.store.acknowledgeReminder(id, userId, role);
+    if (reminder) this.broadcast({ type: "reminder.updated", reminder });
+    return reminder;
+  }
+
+  async createWeeklyReport(
+    reportingPeriod: string,
+    createdBy: string,
+  ): Promise<{ report: WeeklyReport; created: boolean }> {
+    const res = this.store.createWeeklyReport({ reportingPeriod, createdBy });
+    if (res.created) this.broadcast({ type: "weekly.updated", report: res.report });
+    return res;
+  }
+
+  async getWeeklyReport(id: string): Promise<WeeklyReport | null> {
+    return this.store.getWeeklyReport(id);
+  }
+
+  async listWeeklyReports(): Promise<WeeklyReport[]> {
+    return this.store.listWeeklyReports();
+  }
+
+  async setWeeklyWorkflowInstance(id: string, instanceId: string): Promise<void> {
+    this.store.setWeeklyWorkflowInstance(id, instanceId);
+  }
+
+  async updateWeeklyDraft(
+    id: string,
+    draftContent: string,
+    aiGenerated?: boolean,
+  ): Promise<WeeklyReport | null> {
+    const report = this.store.updateWeeklyDraft(id, draftContent, aiGenerated);
+    if (report) this.broadcast({ type: "weekly.updated", report });
+    return report;
+  }
+
+  async setWeeklyStatus(
+    id: string,
+    status: WeeklyReportStatus,
+    extra: { mentorFeedback?: string | null; round?: number } = {},
+  ): Promise<WeeklyReport | null> {
+    const report = this.store.setWeeklyStatus(id, status, extra);
+    if (report) this.broadcast({ type: "weekly.updated", report });
+    return report;
+  }
+
   // -- WebSocket lifecycle (Hibernation API) --------------------------
 
   private handleWebSocketUpgrade(url: URL): Response {
@@ -230,6 +313,9 @@ export class WorkspaceDO extends DurableObject<Env> {
       // authoritative record is already persisted; Vectorize is not source of
       // truth, so a failed enqueue never fails the mutation.
       await this.enqueueHistoryIndex(who.workspaceId, events);
+      // Phase 4B: a new blocker starts a durable reminder/escalation workflow.
+      // Also best-effort and off the ack path.
+      await this.enqueueWorkflowStart(who.workspaceId, events);
     } catch (err) {
       if (err instanceof AppError) {
         this.sendTo(ws, { type: "error", code: err.code, requestId, message: err.message });
@@ -261,6 +347,27 @@ export class WorkspaceDO extends DurableObject<Env> {
       await Promise.all(msgs.map((m) => this.env.HISTORY_QUEUE.send(m)));
     } catch (err) {
       console.error("history-index enqueue failed (non-fatal)", err);
+    }
+  }
+
+  /** A newly created blocker triggers its reminder/escalation workflow. */
+  private async enqueueWorkflowStart(
+    workspaceId: string,
+    events: ServerMessage[],
+  ): Promise<void> {
+    if (!this.env.WORKFLOW_QUEUE || !workspaceId) return;
+    const starts: WorkflowEventMessage[] = events
+      .filter((ev) => ev.type === "blocker.created")
+      .map((ev) => ({
+        kind: "blocker.workflow.start" as const,
+        workspaceId,
+        blockerId: (ev as { blocker: Blocker }).blocker.id,
+      }));
+    if (starts.length === 0) return;
+    try {
+      await Promise.all(starts.map((m) => this.env.WORKFLOW_QUEUE.send(m)));
+    } catch (err) {
+      console.error("workflow-start enqueue failed (non-fatal)", err);
     }
   }
 
@@ -447,6 +554,8 @@ export class WorkspaceDO extends DurableObject<Env> {
       feedback: this.store.listFeedback(),
       activity: this.store.listActivity(),
       presence: this.presenceState(),
+      reminders: this.store.listRemindersFor(identity.userId, identity.role),
+      weeklyReports: this.store.listWeeklyReports(),
     };
   }
 

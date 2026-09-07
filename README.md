@@ -4,11 +4,13 @@ A realtime internship/project progress platform where interns, mentors, and
 managers share one continuously updated workspace instead of maintaining
 separate status documents.
 
-> **Status: Phase 4A — RAG over workspace history.** Everything from Phase 3 plus
-> long-term semantic memory: a Queue indexes UPDATE / BLOCKER / FEEDBACK records
-> into Vectorize, and the Progress Agent retrieves relevant history at question
-> time. Vectorize is **retrieval only** — WorkspaceDO SQLite stays the single
-> source of truth. Still no R2, no Workflows/reminders, no agent mutations.
+> **Status: Phase 4B — Workflows: reminders, escalation, weekly review.**
+> Everything from Phase 4A plus two durable Cloudflare Workflows: a blocker
+> reminder/escalation flow (started when a blocker is created) and a
+> human-in-the-loop weekly progress review (draft → intern submit → mentor
+> approve/request-changes → manager view). In-app reminders only. The agent
+> drafts wording but never mutates workspace state. Still no R2, no Slack/email,
+> no cron triggers.
 
 ## Architecture
 
@@ -28,6 +30,14 @@ Workspace Durable Object  ◄─── DO-to-DO RPC ───  ProgressAgent  (A
    └─ WebSockets (Hibernation API)                truth          │   3. Workers AI chat  (current state wins conflicts)
                                                                  └─ Agent SQLite: conversation turns only
 Vectorize  (internpulse-history, 768-dim cosine)  ← retrieval index ONLY, never source of truth
+
+Phase 4B:
+  blocker.created ─► WORKFLOW_QUEUE ─► queue() ─► BLOCKER_WORKFLOW.create(id: blocker-<id>)
+       BlockerWorkflow: sleep → re-read blocker from DO → reminders (intern+mentor) → sleep → re-read → escalate (manager)
+  "Start weekly review" (HTTP) ─► WEEKLY_WORKFLOW.create(id: weekly-<reportId>)
+       WeeklyReviewWorkflow: agent draft → waitForEvent(submit) → waitForEvent(review) → APPROVE | REQUEST_CHANGES↺
+  Human actions (submit / review) ─► HTTP route ─► instance.sendEvent(...)   (no HTTP request held open)
+  reminders + weekly_reports live in DO SQLite; Workflows only advance the lifecycle.
 ```
 
 **Data responsibility** (never duplicated across the two stores):
@@ -116,6 +126,40 @@ conflict** (a resolved blocker is never reported as open).
   entity is gone. To wipe it entirely: `wrangler vectorize delete internpulse-history`
   then recreate.
 
+### Workflows: reminders + weekly review (Phase 4B)
+
+Two durable Cloudflare Workflows (`BlockerWorkflow`, `WeeklyReviewWorkflow`),
+exported from `src/worker/index.ts`.
+
+- **Blocker reminder/escalation** — when a blocker is created, `WorkspaceDO`
+  enqueues `{kind:"blocker.workflow.start", …}` on `WORKFLOW_QUEUE` (best-effort,
+  off the ack path). The `queue()` consumer calls
+  `BLOCKER_WORKFLOW.create({ id: "blocker-<blockerId>" })` — a deterministic id,
+  so duplicate starts are a no-op. The workflow sleeps `BLOCKER_REMINDER_DELAY`,
+  **re-reads the blocker from `WorkspaceDO`** (RESOLVED/gone → stop), creates
+  in-app reminders for intern + mentor, sleeps `BLOCKER_ESCALATION_DELAY`,
+  re-reads again, then escalates to the manager. Reminders dedup on
+  `(entity_type, entity_id, type, recipient_role)` — no duplicate escalation.
+- **Weekly review** — `POST /api/workspace/:id/weekly` (intern or mentor) creates
+  a `weekly_reports` row and starts `WEEKLY_WORKFLOW` (`id: "weekly-<reportId>"`).
+  The workflow: `step.do` draft (ProgressAgent → current state + RAG history →
+  Workers AI; **deterministic marked draft** if AI fails) → `waitForEvent`
+  intern-submit → `waitForEvent` mentor-review → `APPROVE` (finalize, notify
+  manager) or `REQUEST_CHANGES` (loop, ≤ `WEEKLY_MAX_ROUNDS`). Human actions are
+  plain HTTP routes that call `instance.sendEvent(...)` — no request is held open
+  across the waits.
+
+Timing is **config-driven** (`.dev.vars`) — short seconds locally, never baked
+in. `compatibility_date` is `2025-09-01` (needed for `step.waitForEvent`).
+Workflows and both queues run fully in `wrangler dev`. For `wrangler deploy`:
+`wrangler queues create internpulse-workflow-events` (Workflows deploy with the
+Worker).
+
+In-app **reminders** live in `reminders` (DO SQLite); **weekly reports** in
+`weekly_reports`. The workflows only advance the lifecycle — the rows are the
+source of truth. New WS events: `reminder.created`, `reminder.updated`,
+`weekly.updated`; the snapshot carries the caller's `reminders` + `weeklyReports`.
+
 ### Scripts
 
 | Script | Purpose |
@@ -154,16 +198,27 @@ identity provider replaces later; nothing downstream changes.
 | `GET` | `/api/workspace/:id/summary` | `{activeTasks, openBlockers, latestUpdate}` (used by overview). |
 | `GET` | `/api/workspace/:id/agent` | This user's Progress Agent conversation history. |
 | `POST` | `/api/workspace/:id/agent` | Ask the Progress Agent (`{prompt}`) — grounded in current state + retrieved history. Response includes `groundedOn` (current-state counts + `retrievedHistory`) and `retrieved[]` (metadata only, no vectors). |
+| `GET` | `/api/workspace/:id/reminders` | This user's reminders (by role, or pinned to them). |
+| `POST` | `/api/workspace/:id/reminders/:rid/ack` | Acknowledge a reminder. |
+| `POST` | `/api/workspace/:id/weekly` | Start a weekly review (intern/mentor). Idempotent per period. |
+| `GET` | `/api/workspace/:id/weekly` | List reports (managers see only `APPROVED`). |
+| `GET` | `/api/workspace/:id/weekly/:rid` | One report (managers: only if `APPROVED`). |
+| `PATCH` | `/api/workspace/:id/weekly/:rid` | Edit the draft (intern; only `DRAFT`/`CHANGES_REQUESTED`). |
+| `POST` | `/api/workspace/:id/weekly/:rid/submit` | Intern submits → workflow event. |
+| `POST` | `/api/workspace/:id/weekly/:rid/review` | Mentor `{decision, feedback?}` → workflow event. |
 
-Agent routes go through the **same `resolveRole` boundary** as every other
-workspace route: no resolvable role → `403`.
+All routes go through the **same `resolveRole` boundary** as every other
+workspace route: no resolvable role → `403`. Weekly review adds per-action role
+checks (intern edits/submits, mentor reviews) and returns `409` for
+out-of-state actions (submit twice, approve an approved report, edit while under
+review).
 
 ## Realtime protocol
 
 Typed in [`src/shared/protocol.ts`](src/shared/protocol.ts), imported by client + Worker + DO.
 
 - **client → DO** (every mutation carries `requestId`): `task.create`, `task.update`, `task.move`, `task.delete`, `blocker.create`, `blocker.resolve`, `update.create`, `feedback.create`, `ping`.
-- **DO → client**: `workspace.snapshot`, `task.created/updated/deleted`, `blocker.created/resolved`, `update.created`, `feedback.created`, `activity.created`, `presence.updated`, `ack` (idempotency), `error`, `pong`.
+- **DO → client**: `workspace.snapshot`, `task.created/updated/deleted`, `blocker.created/resolved`, `update.created`, `feedback.created`, `activity.created`, `presence.updated`, `reminder.created/updated`, `weekly.updated`, `ack` (idempotency), `error`, `pong`.
 
 The DO is authoritative: it validates, persists to SQLite, records activity,
 de-duplicates by `requestId` (`processed_requests` table, pruned after 1h),
@@ -190,14 +245,18 @@ src/worker/permissions.ts         Role matrix
 src/worker/progress-agent.ts      ProgressAgent (Agents SDK): context fetch, RAG retrieval, inference, conversation store
 src/worker/agent-context.ts       Pure: bounded state projection + prompt building (+ history section) + offline stub
 src/worker/history-index.ts       Pure: entity→text, vector id, metadata shape, history-block rendering
-src/worker/queue-consumer.ts      HISTORY_QUEUE consumer: re-read entity → embed → Vectorize upsert/delete
-src/client/                       React SPA: identity, useWorkspace hook, components/, tabs/ (incl. AgentTab), board/
+src/worker/queue-consumer.ts      HISTORY_QUEUE + WORKFLOW_QUEUE consumers
+src/worker/blocker-workflow.ts    BlockerWorkflow: durable reminder → escalation
+src/worker/weekly-workflow.ts     WeeklyReviewWorkflow: draft → submit → review (human-in-the-loop)
+src/worker/reminders.ts           Pure: deterministic reminder/escalation/weekly-draft text; isoWeek()
+src/client/                       React SPA: identity, useWorkspace hook, components/ (incl. RemindersPanel), tabs/ (incl. AgentTab, WeeklyTab), board/
 ```
 
-## Deliberately deferred (post-4A)
+## Deliberately deferred (post-4B)
 
-Cloudflare Workflows (weekly-review, mentor-approval), automated reminders /
-blocker escalation, R2 uploads + document indexing, notifications
-(Slack/email/calendar), agent-triggered actions, analytics / scoring, real
-authentication, comments, task/activity indexing, retrieval re-ranking, and
-reorder-within-column / touch / keyboard drag-and-drop.
+R2 + file attachments + document indexing, Slack/email/SMS/calendar delivery
+channels, cron/scheduled Workflow triggers (e.g. auto Friday weekly review),
+agent-triggered state mutations, blocker auto-resolution, analytics / performance
+scoring, real authentication, comments, task/activity indexing, retrieval
+re-ranking, reminder snooze UI, and reorder-within-column / touch / keyboard
+drag-and-drop.

@@ -6,12 +6,14 @@ import {
   type Feedback,
   type PresenceState,
   type ProgressUpdate,
+  type Reminder,
   type ServerMessage,
   type Task,
   type TaskPatch,
   type TaskPriority,
   type TaskStatus,
   type UpdateType,
+  type WeeklyReport,
   type WorkspaceSnapshot,
 } from "../../shared/protocol";
 import { WorkspaceSocket, type SocketStatus } from "./workspaceSocket";
@@ -26,6 +28,8 @@ export interface WorkspaceState {
   feedback: Feedback[];
   activity: ActivityEntry[];
   presence: PresenceState;
+  reminders: Reminder[];
+  weeklyReports: WeeklyReport[];
   lastError: { at: number; message: string; code?: string } | null;
 }
 
@@ -39,6 +43,8 @@ const initialState: WorkspaceState = {
   feedback: [],
   activity: [],
   presence: { count: 0, members: [] },
+  reminders: [],
+  weeklyReports: [],
   lastError: null,
 };
 
@@ -67,6 +73,8 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         feedback: msg.feedback,
         activity: msg.activity,
         presence: msg.presence,
+        reminders: msg.reminders,
+        weeklyReports: msg.weeklyReports,
       };
     case "task.created":
       return { ...state, tasks: upsert(state.tasks, msg.task) };
@@ -86,6 +94,12 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       return { ...state, activity: [msg.activity, ...state.activity].slice(0, 150) };
     case "presence.updated":
       return { ...state, presence: msg.presence };
+    case "reminder.created":
+      return { ...state, reminders: upsert(state.reminders, msg.reminder) };
+    case "reminder.updated":
+      return { ...state, reminders: upsert(state.reminders, msg.reminder) };
+    case "weekly.updated":
+      return { ...state, weeklyReports: upsert(state.weeklyReports, msg.report) };
     case "error":
       return { ...state, lastError: { at: Date.now(), message: msg.message, code: msg.code } };
     case "ack":
