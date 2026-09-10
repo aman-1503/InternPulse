@@ -18,7 +18,8 @@
     "db:seed:remote": "wrangler d1 execute internpulse --remote --file=./seed/dev-seed.sql",
     "demo:seed": "node scripts/demo-seed.mjs",
     "test": "vitest run",
-    "load-test": "node scripts/load-test.mjs"
+    "load-test": "node scripts/load-test.mjs",
+    "test:prod-smoke": "node scripts/prod-smoke.mjs"
   },
   "dependencies": {
     "agents": "^0.22.0",

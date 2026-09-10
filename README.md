@@ -212,6 +212,21 @@ Latest run: build clean; Phase 2 realtime 28/28; Phase 3 agent 17/17; blocker
 workflow 7/7; weekly workflow 23/23; AI-unavailable 7/7; RAG + documents pass
 (subject to Vectorize's ~30–90s async indexing).
 
+`npm run test` (vitest) covers the permission matrix, @mention parsing, the
+attention engine, and the workspace-socket reconnect/backoff state machine.
+`npm run load-test -- <N>` and `node scripts/qa-adversarial.mjs` are local-only
+(`wrangler dev`) tools — an authorization/leak/concurrency/input-robustness
+suite and a concurrent-client load test. Neither should be pointed at the
+live deployment.
+
+`npm run test:prod-smoke` is a **targeted production smoke test, not a load
+test**: it opens a real WS connection as a seeded member, confirms a
+non-member is denied, exercises one task/blocker/agent/weekly/attachments
+round-trip each, and cleans up any test data it creates (or fails safely into
+cleanup via `finally` if a check throws). Run it once after a deploy against
+`https://internpulse.amanprabhune.workers.dev` (override with
+`INTERNPULSE_URL`) — never in a loop, never with concurrent clients.
+
 ---
 
 ## Deployment
