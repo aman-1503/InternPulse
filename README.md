@@ -292,6 +292,11 @@ enable R2 in the dashboard, then `wrangler r2 bucket create internpulse-attachme
 
 See **[`DEMO.md`](./DEMO.md)** for the ~5-minute script.
 
+For a full first-time user/reviewer testing pass — roles, every tab,
+realtime/reconnect checks, the blocker and weekly lifecycles, @mentions,
+authorization/isolation checks, break-it cases, and a bug report template —
+see **[`docs/NEW_USER_TESTING_MANUAL.md`](./docs/NEW_USER_TESTING_MANUAL.md)**.
+
 ---
 
 ## Project layout
