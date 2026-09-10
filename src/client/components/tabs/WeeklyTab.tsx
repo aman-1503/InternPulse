@@ -3,11 +3,28 @@ import type { WeeklyReport } from "../../../shared/protocol";
 import type { WorkspaceState } from "../../lib/useWorkspace";
 import { timeAgo } from "../../lib/format";
 import {
+  overrideWeeklyReport,
   reviewWeeklyReport,
   saveWeeklyDraft,
   startWeeklyReview,
   submitWeeklyReport,
 } from "../../lib/phase4b";
+
+const LIFECYCLE = ["DRAFT", "SUBMITTED", "CHANGES_REQUESTED", "RESUBMITTED", "APPROVED"] as const;
+
+function Stepper({ status }: { status: WeeklyReport["status"] }) {
+  const idx = LIFECYCLE.indexOf(status);
+  return (
+    <div className="weekly-stepper">
+      {LIFECYCLE.map((s, i) => (
+        <span key={s} className={`step${i === idx ? " active" : ""}${i < idx ? " done" : ""}`}>
+          {s.replace(/_/g, " ")}
+          {i < LIFECYCLE.length - 1 && <span className="arrow">→</span>}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 interface Identity {
   userId: string;
@@ -27,7 +44,7 @@ export function WeeklyTab({
 }) {
   const role = state.you?.role ?? null;
   const reports = [...state.weeklyReports].sort((a, b) => b.createdAt - a.createdAt);
-  const visible = role === "manager" ? reports.filter((r) => r.status === "APPROVED") : reports;
+  const visible = reports;
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -101,6 +118,9 @@ export function WeeklyTab({
               reviewWeeklyReport(workspaceId, identity, devRole, selected.id, decision, feedback),
             )
           }
+          onOverride={(decision, note) =>
+            run(() => overrideWeeklyReport(workspaceId, identity, devRole, selected.id, decision, note))
+          }
         />
       )}
     </div>
@@ -114,6 +134,7 @@ function ReportPanel({
   onSave,
   onSubmit,
   onReview,
+  onOverride,
 }: {
   report: WeeklyReport;
   role: string | null;
@@ -121,12 +142,15 @@ function ReportPanel({
   onSave: (content: string) => void;
   onSubmit: () => void;
   onReview: (decision: "APPROVE" | "REQUEST_CHANGES", feedback?: string) => void;
+  onOverride: (decision: "APPROVE" | "REQUEST_CHANGES", note: string) => void;
 }) {
   const editable =
     role === "intern" && (report.status === "DRAFT" || report.status === "CHANGES_REQUESTED");
-  const reviewable = role === "mentor" && report.status === "SUBMITTED";
+  const reviewable = role === "mentor" && (report.status === "SUBMITTED" || report.status === "RESUBMITTED");
+  const overridable = role === "manager" && (report.status === "SUBMITTED" || report.status === "RESUBMITTED");
   const [draft, setDraft] = useState(report.draftContent);
   const [feedback, setFeedback] = useState("");
+  const [overrideNote, setOverrideNote] = useState("");
   const content = report.status === "APPROVED" ? (report.finalContent ?? report.draftContent) : report.draftContent;
 
   return (
@@ -138,8 +162,15 @@ function ReportPanel({
         <span className="meta">round {report.round} · created {timeAgo(report.createdAt)}</span>
       </div>
 
+      <Stepper status={report.status} />
+
       {report.status === "CHANGES_REQUESTED" && report.mentorFeedback && (
         <div className="banner">Mentor asked for changes: {report.mentorFeedback}</div>
+      )}
+      {report.overriddenBy && (
+        <div className="banner">
+          Manager override by {report.overriddenByName ?? report.overriddenBy}: decided {report.status}.
+        </div>
       )}
 
       {editable ? (
@@ -176,6 +207,29 @@ function ReportPanel({
               onClick={() => onReview("REQUEST_CHANGES", feedback.trim())}
             >
               Request changes
+            </button>
+          </div>
+        </div>
+      )}
+
+      {overridable && (
+        <div className="report-review">
+          <label>Manager override — note required (recorded in the audit history)</label>
+          <textarea rows={3} value={overrideNote} onChange={(e) => setOverrideNote(e.target.value)} />
+          <div className="row">
+            <button
+              className="primary"
+              disabled={busy || !overrideNote.trim()}
+              onClick={() => onOverride("APPROVE", overrideNote.trim())}
+            >
+              Override: Approve
+            </button>
+            <button
+              className="danger"
+              disabled={busy || !overrideNote.trim()}
+              onClick={() => onOverride("REQUEST_CHANGES", overrideNote.trim())}
+            >
+              Override: Request changes
             </button>
           </div>
         </div>

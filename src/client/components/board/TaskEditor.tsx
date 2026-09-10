@@ -11,7 +11,13 @@ export interface TaskDraft {
   title: string;
   description: string | null;
   priority: TaskPriority | null;
+  dueDate: number | null;
   status: TaskStatus;
+}
+
+function toDateInputValue(ms: number | null): string {
+  if (!ms) return "";
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 /** Inline create/edit panel. No modal library — just a bordered form. */
@@ -27,6 +33,7 @@ export function TaskEditor({
   const [title, setTitle] = useState(task?.title ?? "");
   const [description, setDescription] = useState(task?.description ?? "");
   const [priority, setPriority] = useState<TaskPriority | "">(task?.priority ?? "");
+  const [dueDate, setDueDate] = useState(toDateInputValue(task?.dueDate ?? null));
   const [status, setStatus] = useState<TaskStatus>(task?.status ?? "TODO");
 
   const submit = () => {
@@ -35,6 +42,7 @@ export function TaskEditor({
       title: title.trim(),
       description: description.trim() || null,
       priority: priority || null,
+      dueDate: dueDate ? new Date(`${dueDate}T00:00:00`).getTime() : null,
       status,
     });
   };
@@ -62,6 +70,10 @@ export function TaskEditor({
               </option>
             ))}
           </select>
+        </div>
+        <div>
+          <label>Due date</label>
+          <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
         </div>
         {task && (
           <div>

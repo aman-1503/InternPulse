@@ -7,10 +7,16 @@ const VERB: Record<ActivityEntry["type"], string> = {
   "task.moved": "moved task",
   "task.completed": "completed task",
   "task.deleted": "deleted task",
+  "task.priority_changed": "changed priority of task",
   "blocker.raised": "raised a blocker",
+  "blocker.commented": "commented on a blocker",
+  "blocker.resolution_requested": "requested resolution of a blocker",
   "blocker.resolved": "resolved a blocker",
+  "blocker.escalated": "escalated a blocker",
   "update.posted": "posted an update",
   "feedback.posted": "posted feedback",
+  "weekly.manager_override": "overrode a weekly review",
+  "workspace.member_added": "added a workspace member",
 };
 
 function describe(a: ActivityEntry): string {

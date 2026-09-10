@@ -1,88 +1,71 @@
 import { useState } from "react";
-import type { Reminder } from "../../shared/protocol";
+import type { AttentionItem, Reminder } from "../../shared/protocol";
 import { timeAgo } from "../lib/format";
-import { acknowledgeReminder } from "../lib/phase4b";
 
 interface Identity {
   userId: string;
   displayName: string;
 }
 
-const LABEL: Record<Reminder["type"], string> = {
-  BLOCKER_REMINDER: "Blocker still open",
-  BLOCKER_ESCALATION: "Blocker escalated",
-  REPORT_SUBMITTED: "Weekly report to review",
-  REPORT_CHANGES_REQUESTED: "Changes requested",
-  REPORT_APPROVED: "Weekly report approved",
+const NAV_TO_TAB: Record<AttentionItem["navigate"]["tab"], string> = {
+  overview: "Overview",
+  board: "Board",
+  blockers: "Blockers",
+  feedback: "Feedback",
+  weekly: "Weekly",
+  activity: "Activity",
 };
 
-/** Compact "Needs attention" surface: a badge that opens an inbox. */
+/**
+ * Role-curated "Needs attention" surface. Every item is re-derived from
+ * current WorkspaceDO state (see worker/attention.ts) — nothing here is a
+ * second, independently-stale copy, so an item simply stops appearing once
+ * the underlying condition (e.g. a blocker resolving) is gone.
+ */
 export function RemindersPanel({
+  items,
   reminders,
-  workspaceId,
-  identity,
-  devRole,
+  onNavigate,
 }: {
+  items: AttentionItem[];
   reminders: Reminder[];
   workspaceId: string;
   identity: Identity;
   devRole: string;
+  onNavigate: (tab: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  const openItems = reminders.filter((r) => r.status === "OPEN");
-
-  const ack = async (id: string) => {
-    setBusy(id);
-    setErr(null);
-    try {
-      await acknowledgeReminder(workspaceId, identity, devRole, id);
-      // the reminder.updated WS event will move it out of the open list
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setBusy(null);
-    }
-  };
+  void reminders; // raw workflow reminders are folded into `items`; kept for callers still reading the field
 
   return (
     <div className="reminders">
       <button
-        className={`reminders-badge${openItems.length > 0 ? " has-items" : ""}`}
+        className={`reminders-badge${items.length > 0 ? " has-items" : ""}`}
         onClick={() => setOpen((v) => !v)}
       >
         Needs attention
-        <span className="count">{openItems.length}</span>
+        <span className="count">{items.length}</span>
       </button>
 
       {open && (
         <div className="reminders-drop">
-          {err && <div className="banner error">{err}</div>}
-          {openItems.length === 0 && <p className="meta">Nothing needs your attention.</p>}
-          {openItems.map((r) => (
-            <div key={r.id} className="reminder-item">
+          {items.length === 0 && <p className="meta">Nothing needs your attention right now.</p>}
+          {items.map((it) => (
+            <button
+              key={it.id}
+              className="reminder-item reminder-item-clickable"
+              onClick={() => {
+                onNavigate(NAV_TO_TAB[it.navigate.tab] ?? "Overview");
+                setOpen(false);
+              }}
+            >
               <div className="reminder-head">
-                <span className={`badge type-${r.type}`}>{LABEL[r.type] ?? r.type}</span>
-                <span className="meta">
-                  for {r.recipientRole} · {timeAgo(r.createdAt)}
-                </span>
+                <span className={`badge type-${it.reason}`}>{it.title}</span>
+                <span className="meta">{timeAgo(it.createdAt)}</span>
               </div>
-              <div className="reminder-msg">{r.message}</div>
-              <div className="reminder-foot meta">
-                {r.entityType.toLowerCase()} {r.entityId.slice(0, 8)}
-                <button disabled={busy === r.id} onClick={() => ack(r.id)}>
-                  {busy === r.id ? "…" : "Acknowledge"}
-                </button>
-              </div>
-            </div>
+              <div className="reminder-msg">{it.message}</div>
+            </button>
           ))}
-          {reminders.some((r) => r.status === "ACKNOWLEDGED") && (
-            <p className="meta acked-note">
-              {reminders.filter((r) => r.status === "ACKNOWLEDGED").length} acknowledged
-            </p>
-          )}
         </div>
       )}
     </div>

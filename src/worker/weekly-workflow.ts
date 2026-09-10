@@ -61,7 +61,7 @@ export class WeeklyReviewWorkflow extends WorkflowEntrypoint<Env, WeeklyParams> 
       }
 
       await step.do(`mark-submitted-${round}`, async () => {
-        await workspace().setWeeklyStatus(reportId, "SUBMITTED", { round });
+        await workspace().setWeeklyStatus(reportId, round === 0 ? "SUBMITTED" : "RESUBMITTED", { round });
         await workspace().createReminder({
           recipientUserId: null,
           recipientRole: "mentor",
@@ -83,12 +83,22 @@ export class WeeklyReviewWorkflow extends WorkflowEntrypoint<Env, WeeklyParams> 
         return { outcome: "expired_awaiting_review", round };
       }
 
-      const payload = (review.payload ?? {}) as { decision?: string; feedback?: string };
+      const payload = (review.payload ?? {}) as {
+        decision?: string;
+        feedback?: string;
+        overriddenBy?: string;
+        overriddenByName?: string;
+      };
       const feedback = typeof payload.feedback === "string" ? payload.feedback : null;
+      const override =
+        typeof payload.overriddenBy === "string" && typeof payload.overriddenByName === "string"
+          ? { userId: payload.overriddenBy, name: payload.overriddenByName }
+          : null;
 
       if (payload.decision === "APPROVE") {
         await step.do(`approve-${round}`, async () => {
           await workspace().setWeeklyStatus(reportId, "APPROVED", { round });
+          if (override) await workspace().recordWeeklyOverride(reportId, override.userId, override.name);
           await workspace().createReminder({
             recipientUserId: null,
             recipientRole: "manager",
@@ -98,7 +108,7 @@ export class WeeklyReviewWorkflow extends WorkflowEntrypoint<Env, WeeklyParams> 
             message: `Weekly report ${reportingPeriod} was approved and is ready to view.`,
           });
         });
-        return { outcome: "approved", round };
+        return { outcome: override ? "approved_by_manager_override" : "approved", round };
       }
 
       // REQUEST_CHANGES (any non-APPROVE decision).
@@ -107,13 +117,14 @@ export class WeeklyReviewWorkflow extends WorkflowEntrypoint<Env, WeeklyParams> 
           mentorFeedback: feedback,
           round: round + 1,
         });
+        if (override) await workspace().recordWeeklyOverride(reportId, override.userId, override.name);
         await workspace().createReminder({
           recipientUserId: null,
           recipientRole: "intern",
           type: "REPORT_CHANGES_REQUESTED",
           entityType: "WEEKLY_REPORT",
           entityId: reportId,
-          message: `Mentor requested changes on weekly report ${reportingPeriod}${
+          message: `${override ? "Manager (override)" : "Mentor"} requested changes on weekly report ${reportingPeriod}${
             feedback ? `: ${feedback}` : "."
           }`,
         });

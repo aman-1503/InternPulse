@@ -13,11 +13,14 @@ import {
   type TaskPriority,
   type TaskStatus,
   type UpdateType,
+  type WorkspaceMember,
   type WorkspaceSnapshot,
 } from "../shared/protocol";
 import { canMutate } from "./permissions";
 import { projectAgentContext } from "./agent-context";
+import { computeAttentionItems } from "./attention";
 import { blockerText, feedbackText, updateText } from "./history-index";
+import { deriveHandle, parseMentions } from "../shared/mentions";
 import { WorkspaceStore } from "./workspace-store";
 import type {
   AgentContext,
@@ -27,9 +30,11 @@ import type {
   HistoryIndexEvent,
   IndexableEntity,
   IndexableEntityType,
+  MentionSourceType,
   Reminder,
   ReminderEntityType,
   ReminderType,
+  Task,
   WeeklyReport,
   WeeklyReportStatus,
   WorkflowEventMessage,
@@ -49,7 +54,12 @@ const MAX = {
   blocker: 1000,
   update: 4000,
   feedback: 4000,
+  comment: 2000,
+  note: 1000,
 } as const;
+
+/** How long a members roster fetched from D1 is trusted before re-fetching. */
+const MEMBERS_TTL_MS = 30_000;
 
 /** A client-facing validation/permission failure. Never a 500. */
 class AppError extends Error {
@@ -70,10 +80,64 @@ class AppError extends Error {
  */
 export class WorkspaceDO extends DurableObject<Env> {
   private readonly store: WorkspaceStore;
+  private membersCache: { at: number; workspaceId: string; members: WorkspaceMember[] } | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.store = new WorkspaceStore(ctx.storage.sql);
+  }
+
+  /**
+   * The DO trusts D1 `memberships`/`users` as the roster source (org identity
+   * lives there, never duplicated into DO storage). Cached briefly per-instance
+   * since it's read on every mutation that can carry an @mention.
+   */
+  private async loadMembers(workspaceId: string): Promise<WorkspaceMember[]> {
+    if (!workspaceId) return [];
+    if (
+      this.membersCache &&
+      this.membersCache.workspaceId === workspaceId &&
+      Date.now() - this.membersCache.at < MEMBERS_TTL_MS
+    ) {
+      return this.membersCache.members;
+    }
+    try {
+      const { results } = await this.env.DB.prepare(
+        `SELECT u.id AS userId, u.display_name AS displayName, m.role AS role
+           FROM memberships m JOIN users u ON u.id = m.user_id
+          WHERE m.workspace_id = ?`,
+      )
+        .bind(workspaceId)
+        .all<{ userId: string; displayName: string; role: Role }>();
+      const members = results.map((r) => ({ ...r, handle: deriveHandle(r.displayName) }));
+      this.membersCache = { at: Date.now(), workspaceId, members };
+      return members;
+    } catch {
+      return [];
+    }
+  }
+
+  /** Parses @mentions in free text and records one Mention per non-self match. */
+  private async applyMentions(
+    who: SocketAttachment,
+    text: string,
+    sourceType: MentionSourceType,
+    sourceId: string,
+  ): Promise<ServerMessage[]> {
+    const members = await this.loadMembers(who.workspaceId);
+    const userIds = parseMentions(text, members).filter((id) => id !== who.userId);
+    const events: ServerMessage[] = [];
+    for (const mentionedUserId of userIds) {
+      const mention = this.store.createMention({
+        mentionedUserId,
+        mentionedByName: who.displayName,
+        sourceType,
+        sourceId,
+        snippet: text.slice(0, 200),
+      });
+      if (mention) events.push({ type: "mention.created", mention });
+    }
+    return events;
   }
 
   // -- HTTP (forwarded from the Worker) --------------------------------
@@ -82,7 +146,7 @@ export class WorkspaceDO extends DurableObject<Env> {
     const url = new URL(request.url);
 
     if (request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
-      return this.handleWebSocketUpgrade(url);
+      return await this.handleWebSocketUpgrade(url);
     }
 
     // JSON endpoints, used by the manager overview and backend tests.
@@ -90,7 +154,7 @@ export class WorkspaceDO extends DurableObject<Env> {
       return Response.json(this.store.summaryStats());
     }
     if (url.pathname.endsWith("/snapshot")) {
-      return Response.json(this.buildSnapshot(url, this.readIdentity(url)));
+      return Response.json(await this.buildSnapshot(url, this.readIdentity(url)));
     }
 
     return new Response("Not found", { status: 404 });
@@ -180,6 +244,10 @@ export class WorkspaceDO extends DurableObject<Env> {
     return this.store.getBlocker(blockerId);
   }
 
+  async getTask(taskId: string): Promise<Task | null> {
+    return this.store.getTask(taskId);
+  }
+
   async createReminder(input: {
     recipientUserId: string | null;
     recipientRole: Role;
@@ -248,6 +316,26 @@ export class WorkspaceDO extends DurableObject<Env> {
     return report;
   }
 
+  /** Stamps the audit fields for a manager override and logs a distinct activity entry. */
+  async recordWeeklyOverride(
+    id: string,
+    overriddenBy: string,
+    overriddenByName: string,
+  ): Promise<WeeklyReport | null> {
+    const report = this.store.setWeeklyOverride(id, overriddenBy, overriddenByName);
+    if (!report) return null;
+    this.broadcast({ type: "weekly.updated", report });
+    this.broadcast(
+      this.activity(
+        { userId: overriddenBy, displayName: overriddenByName, role: "manager", workspaceId: "" },
+        "weekly.manager_override",
+        id,
+        { status: report.status },
+      ),
+    );
+    return report;
+  }
+
   // -- RPC: Stage 1 (finish) attachments -----------------------------
   // Bytes live in R2 (the Worker writes them); this DO owns only the metadata.
 
@@ -291,14 +379,14 @@ export class WorkspaceDO extends DurableObject<Env> {
 
   // -- WebSocket lifecycle (Hibernation API) --------------------------
 
-  private handleWebSocketUpgrade(url: URL): Response {
+  private async handleWebSocketUpgrade(url: URL): Promise<Response> {
     const identity = this.readIdentity(url);
 
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment(identity satisfies SocketAttachment);
 
-    this.sendTo(server, { type: "workspace.snapshot", ...this.buildSnapshot(url, identity) });
+    this.sendTo(server, { type: "workspace.snapshot", ...(await this.buildSnapshot(url, identity)) });
     this.broadcast({ type: "presence.updated", presence: this.presenceState() }, server);
 
     return new Response(null, { status: 101, webSocket: client });
@@ -341,15 +429,16 @@ export class WorkspaceDO extends DurableObject<Env> {
       return;
     }
 
-    // Idempotency: a replayed requestId is acknowledged without re-applying.
-    if (this.store.wasProcessed(requestId)) {
+    // Idempotency: claimed SYNCHRONOUSLY (no await between this check and the
+    // claim) so two identical in-flight messages can't both slip through while
+    // the first is still awaiting dispatch's async work (mentions -> D1).
+    if (!this.store.claimRequest(requestId)) {
       this.sendTo(ws, { type: "ack", requestId, duplicate: true });
       return;
     }
 
     try {
-      const events = this.dispatch(msg, who);
-      this.store.markProcessed(requestId);
+      const events = await this.dispatch(msg, who);
       for (const ev of events) this.broadcast(ev);
       this.sendTo(ws, { type: "ack", requestId });
       // Phase 4A: enqueue compact history-index events. Best-effort — the
@@ -360,6 +449,8 @@ export class WorkspaceDO extends DurableObject<Env> {
       // Also best-effort and off the ack path.
       await this.enqueueWorkflowStart(who.workspaceId, events);
     } catch (err) {
+      // The mutation didn't actually apply — release the claim so a genuine retry works.
+      this.store.releaseRequest(requestId);
       if (err instanceof AppError) {
         this.sendTo(ws, { type: "error", code: err.code, requestId, message: err.message });
       } else {
@@ -429,10 +520,17 @@ export class WorkspaceDO extends DurableObject<Env> {
 
   // -- mutation dispatch --------------------------------------------
 
-  private dispatch(
+  /** True once a task belongs to someone else (only relevant for the intern-owner guard). */
+  private taskBelongsToAnother(task: { assigneeId: string | null; createdBy: string }, who: SocketAttachment): boolean {
+    if (who.role !== "intern") return false;
+    const owner = task.assigneeId ?? task.createdBy;
+    return owner !== who.userId;
+  }
+
+  private async dispatch(
     msg: Exclude<ClientMessage, { type: "ping" }>,
     who: SocketAttachment,
-  ): ServerMessage[] {
+  ): Promise<ServerMessage[]> {
     switch (msg.type) {
       case "task.create": {
         const title = requireText(msg.title, "title", MAX.title);
@@ -441,11 +539,13 @@ export class WorkspaceDO extends DurableObject<Env> {
         const priority = msg.priority
           ? requireEnum(msg.priority, TASK_PRIORITIES, "priority")
           : null;
+        const dueDate = typeof msg.dueDate === "number" ? msg.dueDate : null;
         const task = this.store.createTask({
           title,
           description,
           status,
           priority,
+          dueDate,
           assigneeId: emptyToNull(msg.assigneeId),
           createdBy: who.userId,
         });
@@ -456,7 +556,11 @@ export class WorkspaceDO extends DurableObject<Env> {
       }
 
       case "task.update": {
-        if (!this.store.getTask(msg.id)) throw new AppError("not_found", "task not found");
+        const existing = this.store.getTask(msg.id);
+        if (!existing) throw new AppError("not_found", "task not found");
+        if (this.taskBelongsToAnother(existing, who)) {
+          throw new AppError("forbidden", "you can only update your own tasks");
+        }
         const patch = sanitizeTaskPatch(msg.patch);
         const task = this.store.updateTask(msg.id, patch);
         if (!task) throw new AppError("not_found", "task not found");
@@ -476,7 +580,11 @@ export class WorkspaceDO extends DurableObject<Env> {
 
       case "task.move": {
         const status = requireEnum(msg.status, TASK_STATUSES, "status");
-        if (!this.store.getTask(msg.id)) throw new AppError("not_found", "task not found");
+        const existing = this.store.getTask(msg.id);
+        if (!existing) throw new AppError("not_found", "task not found");
+        if (this.taskBelongsToAnother(existing, who)) {
+          throw new AppError("forbidden", "you can only move your own tasks");
+        }
         const task = this.store.updateTask(msg.id, { status });
         if (!task) throw new AppError("not_found", "task not found");
         return [
@@ -493,10 +601,24 @@ export class WorkspaceDO extends DurableObject<Env> {
       case "task.delete": {
         const existing = this.store.getTask(msg.id);
         if (!existing) throw new AppError("not_found", "task not found");
+        if (this.taskBelongsToAnother(existing, who)) {
+          throw new AppError("forbidden", "you can only delete your own tasks");
+        }
         this.store.deleteTask(msg.id);
         return [
           { type: "task.deleted", id: msg.id },
           this.activity(who, "task.deleted", msg.id, { title: existing.title }),
+        ];
+      }
+
+      case "task.priority": {
+        const priority = requireEnum(msg.priority, TASK_PRIORITIES, "priority");
+        if (!this.store.getTask(msg.id)) throw new AppError("not_found", "task not found");
+        const task = this.store.setTaskPriority(msg.id, priority);
+        if (!task) throw new AppError("not_found", "task not found");
+        return [
+          { type: "task.updated", task },
+          this.activity(who, "task.priority_changed", task.id, { title: task.title, priority }),
         ];
       }
 
@@ -510,6 +632,7 @@ export class WorkspaceDO extends DurableObject<Env> {
           description,
           taskId,
           createdBy: who.userId,
+          createdByName: who.displayName,
         });
         return [
           { type: "blocker.created", blocker },
@@ -517,17 +640,86 @@ export class WorkspaceDO extends DurableObject<Env> {
         ];
       }
 
+      case "blocker.comment": {
+        const content = requireText(msg.content, "content", MAX.comment);
+        if (!this.store.getBlocker(msg.id)) throw new AppError("not_found", "blocker not found");
+        const comment = this.store.addBlockerComment({
+          blockerId: msg.id,
+          authorId: who.userId,
+          authorName: who.displayName,
+          authorRole: who.role,
+          content,
+        });
+        const blocker = this.store.getBlocker(msg.id)!;
+        const events: ServerMessage[] = [
+          { type: "blocker.commented", blocker, comment },
+          this.activity(who, "blocker.commented", blocker.id, { content }),
+        ];
+        events.push(...(await this.applyMentions(who, content, "BLOCKER_COMMENT", msg.id)));
+        return events;
+      }
+
+      case "blocker.requestResolution": {
+        const existing = this.store.getBlocker(msg.id);
+        if (!existing) throw new AppError("not_found", "blocker not found");
+        if (existing.status !== "OPEN") {
+          throw new AppError("conflict", `cannot request resolution from status ${existing.status}`);
+        }
+        const blocker = this.store.requestBlockerResolution(msg.id, who.userId)!;
+        const comment = this.store.addBlockerComment({
+          blockerId: msg.id,
+          authorId: who.userId,
+          authorName: who.displayName,
+          authorRole: who.role,
+          content: "Requested resolution — please confirm this is fixed.",
+        });
+        return [
+          { type: "blocker.commented", blocker, comment },
+          this.activity(who, "blocker.resolution_requested", blocker.id, null),
+        ];
+      }
+
       case "blocker.resolve": {
+        const note = requireText(msg.note, "note", MAX.note);
         const existing = this.store.getBlocker(msg.id);
         if (!existing) throw new AppError("not_found", "blocker not found");
         if (existing.status === "RESOLVED") {
           // Already resolved: idempotent success, nothing to broadcast.
           return [];
         }
-        const blocker = this.store.resolveBlocker(msg.id)!;
+        const blocker = this.store.resolveBlocker(msg.id, who.userId, who.displayName, note)!;
         return [
           { type: "blocker.resolved", blocker },
-          this.activity(who, "blocker.resolved", blocker.id, null),
+          this.activity(who, "blocker.resolved", blocker.id, { note }),
+        ];
+      }
+
+      case "blocker.escalate": {
+        const existing = this.store.getBlocker(msg.id);
+        if (!existing) throw new AppError("not_found", "blocker not found");
+        if (existing.status === "RESOLVED") {
+          throw new AppError("conflict", "cannot escalate a resolved blocker");
+        }
+        const note = optionalText(msg.note, "note", MAX.note) ?? "Escalated by manager";
+        const comment = this.store.addBlockerComment({
+          blockerId: msg.id,
+          authorId: who.userId,
+          authorName: who.displayName,
+          authorRole: who.role,
+          content: `[escalation] ${note}`,
+        });
+        this.store.createReminder({
+          recipientUserId: null,
+          recipientRole: "mentor",
+          type: "BLOCKER_ESCALATION",
+          entityType: "BLOCKER",
+          entityId: msg.id,
+          message: `Manager escalated: ${note}`,
+        });
+        const blocker = this.store.getBlocker(msg.id)!;
+        return [
+          { type: "blocker.commented", blocker, comment },
+          this.activity(who, "blocker.escalated", blocker.id, { note }),
         ];
       }
 
@@ -542,10 +734,12 @@ export class WorkspaceDO extends DurableObject<Env> {
           type: updateType,
           content,
         });
-        return [
+        const events: ServerMessage[] = [
           { type: "update.created", update },
           this.activity(who, "update.posted", String(update.id), { updateType }),
         ];
+        events.push(...(await this.applyMentions(who, content, "UPDATE", String(update.id))));
+        return events;
       }
 
       case "feedback.create": {
@@ -560,10 +754,12 @@ export class WorkspaceDO extends DurableObject<Env> {
           content,
           taskId,
         });
-        return [
+        const events: ServerMessage[] = [
           { type: "feedback.created", feedback },
           this.activity(who, "feedback.posted", feedback.id, null),
         ];
+        events.push(...(await this.applyMentions(who, content, "TASK_COMMENT", feedback.id)));
+        return events;
       }
     }
   }
@@ -586,20 +782,47 @@ export class WorkspaceDO extends DurableObject<Env> {
 
   // -- snapshot / presence ---------------------------------------
 
-  private buildSnapshot(url: URL, identity: SocketAttachment): WorkspaceSnapshot {
+  private async buildSnapshot(url: URL, identity: SocketAttachment): Promise<WorkspaceSnapshot> {
+    const workspaceId = workspaceIdFrom(url);
+    const members = await this.loadMembers(workspaceId);
+    const tasks = this.store.listTasks();
+    const blockers = this.store.listBlockers();
+    const weeklyReports = this.store.listWeeklyReports();
+    const mentions = identity.role ? this.store.listMentionsFor(identity.userId) : [];
+    const reminders = this.store.listRemindersFor(identity.userId, identity.role);
+    const lastUpdate = this.store.latestUpdate();
+
+    const attentionItems = identity.role
+      ? computeAttentionItems({
+          role: identity.role,
+          userId: identity.userId,
+          now: Date.now(),
+          tasks,
+          blockers,
+          weeklyReports,
+          mentions,
+          reminders,
+          lastUpdateAt: lastUpdate ? lastUpdate.createdAt : null,
+        })
+      : [];
+
     return {
       schemaVersion: this.store.schemaVersion() || WS_PROTOCOL_VERSION,
-      workspaceId: workspaceIdFrom(url),
+      workspaceId,
       you: identity,
-      tasks: this.store.listTasks(),
-      blockers: this.store.listBlockers(),
+      members,
+      tasks,
+      blockers,
+      blockerComments: this.store.listAllBlockerComments(),
       updates: this.store.listUpdates(),
       feedback: this.store.listFeedback(),
       activity: this.store.listActivity(),
       presence: this.presenceState(),
-      reminders: this.store.listRemindersFor(identity.userId, identity.role),
+      reminders,
+      attentionItems,
+      mentions,
       attachments: this.store.listAttachments(),
-      weeklyReports: this.store.listWeeklyReports(),
+      weeklyReports,
     };
   }
 
@@ -702,6 +925,12 @@ function sanitizeTaskPatch(patch: unknown): TaskPatch {
   if ("status" in p) out.status = requireEnum<TaskStatus>(p.status, TASK_STATUSES, "status");
   if ("priority" in p) {
     out.priority = p.priority === null ? null : requireEnum<TaskPriority>(p.priority, TASK_PRIORITIES, "priority");
+  }
+  if ("dueDate" in p) {
+    if (p.dueDate !== null && typeof p.dueDate !== "number") {
+      throw new AppError("bad_field", "dueDate must be a number (epoch ms) or null");
+    }
+    out.dueDate = p.dueDate as number | null;
   }
   if ("assigneeId" in p) out.assigneeId = emptyToNull(p.assigneeId);
   if (Object.keys(out).length === 0) throw new AppError("empty_patch", "patch has no recognised fields");

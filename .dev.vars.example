@@ -23,5 +23,8 @@ AGENT_FAKE_AI=1
 # Duration strings: "<n> seconds|minutes|hours|days".
 BLOCKER_REMINDER_DELAY=3 seconds
 BLOCKER_ESCALATION_DELAY=20 seconds
+# Shorter still when the linked task is URGENT/HIGH priority.
+BLOCKER_REMINDER_DELAY_URGENT=1 seconds
+BLOCKER_ESCALATION_DELAY_URGENT=5 seconds
 WEEKLY_STEP_TIMEOUT=120 seconds
 WEEKLY_MAX_ROUNDS=3

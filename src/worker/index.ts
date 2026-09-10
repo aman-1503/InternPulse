@@ -40,35 +40,40 @@ const json = (data: unknown, status = 200): Response =>
  * THE authorization boundary. Every workspace route (HTTP + WebSocket upgrade)
  * calls this exactly once; nothing downstream re-derives identity.
  *
- * DEMO IDENTITY (not production auth): `userId` / `displayName` come from the
- * browser (see src/client/identity.ts) and are unauthenticated. If the identity
- * maps to a D1 `memberships` row, that role is authoritative; otherwise a
- * `devRole` query param is honoured so a reviewer can try all three roles.
- * `null` here => 403 everywhere.
+ * D1 `memberships` is the ONLY source of authorization: a role is returned iff
+ * this exact (workspaceId, userId) has a membership row. There is no fallback
+ * for an unmapped identity — `null` here means "not a member of this
+ * workspace" and every caller MUST deny access entirely (no anonymous or
+ * read-only browsing of a workspace you don't belong to).
  *
- * To make this real, replace ONLY this function body: read a verified principal
- * from a Cloudflare-native source — a signed cookie/JWT set by Cloudflare Access
- * (`Cf-Access-Jwt-Assertion`), or a session Durable Object — look its id up in
- * D1 `memberships`, and drop the `devRole` fallback. The `Caller` shape, the
- * route handlers, `canMutate`, and the DO all stay unchanged.
+ * DEMO IDENTITY (not production auth): `userId` / `displayName` come from the
+ * browser (see src/client/identity.ts) and are unauthenticated — but WHICH
+ * workspaces/roles they can act as is still governed entirely by real D1 rows
+ * seeded for the demo identities. A demo identity can "switch roles" only in
+ * the sense of connecting as one of its own membership rows in a workspace it
+ * actually belongs to; it can never acquire a role in a workspace it isn't a
+ * member of. `devRole` is intentionally NOT consulted here — it is honoured
+ * only by workspace *creation* (`handleCreateWorkspace`), where by definition
+ * no membership can exist yet.
+ *
+ * To make this real, replace ONLY this function body: read a verified
+ * principal from a Cloudflare-native source — a signed cookie/JWT set by
+ * Cloudflare Access (`Cf-Access-Jwt-Assertion`), or a session Durable Object —
+ * and look its id up in D1 `memberships`. The `Caller` shape, the route
+ * handlers, `canMutate`, and the DO all stay unchanged.
  */
-async function resolveRole(
-  env: Env,
-  workspaceId: string,
-  userId: string,
-  devRole: string | null,
-): Promise<Role | null> {
+async function resolveRole(env: Env, workspaceId: string, userId: string): Promise<Role | null> {
   try {
     const row = await env.DB.prepare(
       "SELECT role FROM memberships WHERE workspace_id = ? AND user_id = ? LIMIT 1",
     )
       .bind(workspaceId, userId)
       .first<{ role: Role }>();
-    if (row?.role) return row.role;
+    return row?.role ?? null;
   } catch {
-    // D1 not migrated yet — fall through to the dev fallback.
+    // D1 unreachable/not migrated — fail closed, never fall back to anonymous access.
+    return null;
   }
-  return DEV_ROLES.includes(devRole as Role) ? (devRole as Role) : null;
 }
 
 async function handleOverview(env: Env, url: URL): Promise<Response> {
@@ -161,7 +166,7 @@ async function handleAgent(
 ): Promise<Response> {
   const userId = url.searchParams.get("userId") || `anon-${crypto.randomUUID().slice(0, 8)}`;
   const displayName = url.searchParams.get("displayName") || "Anonymous";
-  const role = await resolveRole(env, workspaceId, userId, url.searchParams.get("devRole"));
+  const role = await resolveRole(env, workspaceId, userId);
 
   if (role === null) {
     return json(
@@ -211,7 +216,7 @@ async function authWorkspace(
 ): Promise<Caller | Response> {
   const userId = url.searchParams.get("userId") || `anon-${crypto.randomUUID().slice(0, 8)}`;
   const displayName = url.searchParams.get("displayName") || "Anonymous";
-  const role = await resolveRole(env, workspaceId, userId, url.searchParams.get("devRole"));
+  const role = await resolveRole(env, workspaceId, userId);
   if (role === null) {
     return json({ error: "you are not a member of this workspace", code: "unauthorized" }, 403);
   }
@@ -386,12 +391,10 @@ async function handleWeekly(
     return json({ report }, created ? 201 : 200);
   }
 
-  // GET /weekly  -> list (managers see only APPROVED)
+  // GET /weekly -> list. Managers see everything too — they need visibility
+  // into SUBMITTED/RESUBMITTED reports to know when an override is warranted.
   if (request.method === "GET" && tail.length === 0) {
-    const reports = await stub.listWeeklyReports();
-    return json({
-      reports: caller.role === "manager" ? reports.filter((r) => r.status === "APPROVED") : reports,
-    });
+    return json({ reports: await stub.listWeeklyReports() });
   }
 
   const reportId = tail[0];
@@ -401,9 +404,6 @@ async function handleWeekly(
   if (request.method === "GET" && reportId && !sub) {
     const report = await stub.getWeeklyReport(reportId);
     if (!report) return json({ error: "report not found", code: "not_found" }, 404);
-    if (caller.role === "manager" && report.status !== "APPROVED") {
-      return json({ error: "report is not yet finalized", code: "forbidden" }, 403);
-    }
     return json({ report });
   }
 
@@ -457,7 +457,7 @@ async function handleWeekly(
     }
     const cur = await stub.getWeeklyReport(reportId);
     if (!cur) return json({ error: "report not found", code: "not_found" }, 404);
-    if (cur.status !== "SUBMITTED") {
+    if (cur.status !== "SUBMITTED" && cur.status !== "RESUBMITTED") {
       return json({ error: `report is not awaiting review (status ${cur.status})`, code: "conflict" }, 409);
     }
     try {
@@ -474,7 +474,192 @@ async function handleWeekly(
     return json({ ok: true });
   }
 
+  // POST /weekly/:id/override -> manager overrides a stuck mentor review
+  if (request.method === "POST" && reportId && sub === "override") {
+    if (caller.role !== "manager") {
+      return json({ error: "only a manager can override a review", code: "forbidden" }, 403);
+    }
+    const body = (await request.json().catch(() => ({}))) as {
+      decision?: unknown;
+      note?: unknown;
+    };
+    const decision = body.decision;
+    if (decision !== "APPROVE" && decision !== "REQUEST_CHANGES") {
+      return json({ error: "decision must be APPROVE or REQUEST_CHANGES", code: "bad_request" }, 400);
+    }
+    if (typeof body.note !== "string" || !body.note.trim()) {
+      return json({ error: "note (string) is required for an override", code: "bad_request" }, 400);
+    }
+    const cur = await stub.getWeeklyReport(reportId);
+    if (!cur) return json({ error: "report not found", code: "not_found" }, 404);
+    if (cur.status !== "SUBMITTED" && cur.status !== "RESUBMITTED") {
+      return json(
+        { error: `override only applies while a review is pending (status ${cur.status})`, code: "conflict" },
+        409,
+      );
+    }
+    try {
+      await sendWeekly(reportId, {
+        type: "weekly.review",
+        payload: {
+          decision: decision as WeeklyReviewDecision,
+          feedback: body.note,
+          overriddenBy: caller.userId,
+          overriddenByName: caller.displayName,
+        },
+      });
+    } catch {
+      return json({ error: "the review workflow is no longer active; start a new review", code: "conflict" }, 409);
+    }
+    return json({ ok: true });
+  }
+
   return json({ error: "not found" }, 404);
+}
+
+// --- Workspace creation + member management (mentor/manager only) ------------
+
+function slugify(name: string): string {
+  const base = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  return `${base || "workspace"}-${crypto.randomUUID().slice(0, 6)}`;
+}
+
+async function upsertUser(env: Env, input: { email: string; displayName: string }): Promise<string> {
+  const email = input.email.trim().toLowerCase();
+  const existing = await env.DB.prepare("SELECT id FROM users WHERE email = ?")
+    .bind(email)
+    .first<{ id: string }>();
+  if (existing) return existing.id;
+  const id = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO users (id, email, display_name) VALUES (?, ?, ?)")
+    .bind(id, email, input.displayName.trim() || email)
+    .run();
+  return id;
+}
+
+interface PersonInput {
+  email: string;
+  displayName: string;
+}
+
+function validatePerson(v: unknown, field: string): PersonInput {
+  if (!v || typeof v !== "object") throw new Error(`${field} is required`);
+  const p = v as Record<string, unknown>;
+  if (typeof p.email !== "string" || !p.email.includes("@")) {
+    throw new Error(`${field}.email must be a valid email`);
+  }
+  if (typeof p.displayName !== "string" || !p.displayName.trim()) {
+    throw new Error(`${field}.displayName is required`);
+  }
+  return { email: p.email, displayName: p.displayName };
+}
+
+/**
+ * POST /api/workspaces — mentor/manager only. No membership exists yet (the
+ * workspace doesn't exist), so the caller asserts their own role the same way
+ * every other route accepts a pre-membership `devRole` claim; only mentor/manager
+ * may create. D1 stays org-metadata-only — no workspace-local state is written here.
+ */
+async function handleCreateWorkspace(env: Env, url: URL, request: Request): Promise<Response> {
+  const userId = url.searchParams.get("userId") || "";
+  const devRole = url.searchParams.get("devRole");
+  const callerRole: Role | null = DEV_ROLES.includes(devRole as Role) ? (devRole as Role) : null;
+  if (callerRole !== "mentor" && callerRole !== "manager") {
+    return json({ error: "only a mentor or manager can create a workspace", code: "forbidden" }, 403);
+  }
+  if (!userId) return json({ error: "userId is required", code: "bad_request" }, 400);
+
+  let body: Record<string, unknown>;
+  try {
+    body = (await request.json()) as Record<string, unknown>;
+  } catch {
+    return json({ error: "malformed JSON body", code: "bad_request" }, 400);
+  }
+
+  let intern: PersonInput, mentor: PersonInput, manager: PersonInput;
+  const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : null;
+  try {
+    if (!name) throw new Error("name is required");
+    intern = validatePerson(body.intern, "intern");
+    mentor = validatePerson(body.mentor, "mentor");
+    manager = validatePerson(body.manager, "manager");
+  } catch (err) {
+    return json({ error: (err as Error).message, code: "bad_request" }, 400);
+  }
+
+  const workspaceId = crypto.randomUUID();
+  const slug = slugify(name);
+
+  const internId = await upsertUser(env, intern);
+  const mentorId = await upsertUser(env, mentor);
+  const managerId = await upsertUser(env, manager);
+
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO workspaces (id, name, slug) VALUES (?, ?, ?)").bind(
+      workspaceId,
+      name,
+      slug,
+    ),
+    env.DB.prepare(
+      "INSERT INTO memberships (id, workspace_id, user_id, role) VALUES (?, ?, ?, 'intern')",
+    ).bind(crypto.randomUUID(), workspaceId, internId),
+    env.DB.prepare(
+      "INSERT INTO memberships (id, workspace_id, user_id, role) VALUES (?, ?, ?, 'mentor')",
+    ).bind(crypto.randomUUID(), workspaceId, mentorId),
+    env.DB.prepare(
+      "INSERT INTO memberships (id, workspace_id, user_id, role) VALUES (?, ?, ?, 'manager')",
+    ).bind(crypto.randomUUID(), workspaceId, managerId),
+  ]);
+
+  return json({ workspace: { id: workspaceId, name, slug } }, 201);
+}
+
+/**
+ * POST /api/workspace/:id/members — mentor/manager of THIS workspace only
+ * (normal authWorkspace boundary, unlike creation above).
+ */
+async function handleAddMember(
+  env: Env,
+  request: Request,
+  workspaceId: string,
+  caller: Caller,
+): Promise<Response> {
+  if (caller.role !== "mentor" && caller.role !== "manager") {
+    return json({ error: "only a mentor or manager can add members", code: "forbidden" }, 403);
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = (await request.json()) as Record<string, unknown>;
+  } catch {
+    return json({ error: "malformed JSON body", code: "bad_request" }, 400);
+  }
+  let person: PersonInput;
+  try {
+    person = validatePerson(body, "member");
+  } catch (err) {
+    return json({ error: (err as Error).message, code: "bad_request" }, 400);
+  }
+  const role = body.role;
+  if (role !== "intern" && role !== "mentor" && role !== "manager") {
+    return json({ error: "role must be intern, mentor, or manager", code: "bad_request" }, 400);
+  }
+
+  const userId = await upsertUser(env, person);
+  const existing = await env.DB.prepare(
+    "SELECT 1 FROM memberships WHERE workspace_id = ? AND user_id = ?",
+  )
+    .bind(workspaceId, userId)
+    .first();
+  if (existing) {
+    return json({ error: "already a member of this workspace", code: "conflict" }, 409);
+  }
+  await env.DB.prepare(
+    "INSERT INTO memberships (id, workspace_id, user_id, role) VALUES (?, ?, ?, ?)",
+  )
+    .bind(crypto.randomUUID(), workspaceId, userId, role)
+    .run();
+
+  return json({ member: { userId, displayName: person.displayName, role } }, 201);
 }
 
 export default {
@@ -504,12 +689,16 @@ export default {
       }
     }
 
+    if (pathname === "/api/workspaces" && request.method === "POST") {
+      return handleCreateWorkspace(env, url, request);
+    }
+
     if (pathname === "/api/overview" && request.method === "GET") {
       return handleOverview(env, url);
     }
 
-    // Phase 4B: reminders + weekly review (nested paths).
-    const p4b = pathname.match(/^\/api\/workspace\/([^/]+)\/(reminders|weekly|attachments)(\/[^?]*)?$/);
+    // Phase 4B: reminders + weekly review (nested paths). Members: add-only.
+    const p4b = pathname.match(/^\/api\/workspace\/([^/]+)\/(reminders|weekly|attachments|members)(\/[^?]*)?$/);
     if (p4b) {
       const workspaceId = decodeURIComponent(p4b[1]);
       if (!WORKSPACE_ID_RE.test(workspaceId)) {
@@ -522,6 +711,10 @@ export default {
       if (p4b[2] === "reminders") return handleReminders(stub, request, caller, tail);
       if (p4b[2] === "attachments") {
         return handleAttachments(env, url, request, workspaceId, stub, caller, tail);
+      }
+      if (p4b[2] === "members") {
+        if (request.method !== "POST" || tail.length !== 0) return json({ error: "not found" }, 404);
+        return handleAddMember(env, request, workspaceId, caller);
       }
       return handleWeekly(env, stub, request, workspaceId, caller, tail);
     }
@@ -549,12 +742,18 @@ export default {
 
       const userId = url.searchParams.get("userId") || `anon-${crypto.randomUUID().slice(0, 8)}`;
       const displayName = url.searchParams.get("displayName") || "Anonymous";
-      const role = await resolveRole(env, workspaceId, userId, url.searchParams.get("devRole"));
+      const role = await resolveRole(env, workspaceId, userId);
+
+      // No membership => no access at all, for reads (snapshot) as well as
+      // realtime (ws). Never forward an unmapped identity into the DO.
+      if (role === null) {
+        return json({ error: "you are not a member of this workspace", code: "unauthorized" }, 403);
+      }
 
       const doUrl = new URL(request.url);
       doUrl.searchParams.set("_uid", userId);
       doUrl.searchParams.set("_name", displayName);
-      doUrl.searchParams.set("_role", role ?? "");
+      doUrl.searchParams.set("_role", role);
 
       return stub.fetch(new Request(doUrl.toString(), request));
     }

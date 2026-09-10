@@ -8,7 +8,7 @@
  */
 
 /** Bump when WS message shapes or the DO SQLite schema change incompatibly. */
-export const WS_PROTOCOL_VERSION = 4;
+export const WS_PROTOCOL_VERSION = 5;
 
 export type Role = "intern" | "mentor" | "manager";
 
@@ -76,8 +76,8 @@ export const TASK_STATUSES: readonly TaskStatus[] = [
   "DONE",
 ];
 
-export type TaskPriority = "LOW" | "MEDIUM" | "HIGH";
-export const TASK_PRIORITIES: readonly TaskPriority[] = ["LOW", "MEDIUM", "HIGH"];
+export type TaskPriority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
+export const TASK_PRIORITIES: readonly TaskPriority[] = ["LOW", "MEDIUM", "HIGH", "URGENT"];
 
 export interface Task {
   id: string;
@@ -85,22 +85,28 @@ export interface Task {
   description: string | null;
   status: TaskStatus;
   priority: TaskPriority | null;
+  dueDate: number | null;
   assigneeId: string | null;
   createdBy: string;
   createdAt: number;
   updatedAt: number;
 }
 
-/** Mutable fields accepted on task.update. */
+/** Mutable fields accepted on task.update (intern only — see permissions.ts). */
 export type TaskPatch = Partial<{
   title: string;
   description: string | null;
   status: TaskStatus;
   priority: TaskPriority | null;
+  dueDate: number | null;
   assigneeId: string | null;
 }>;
 
-export type BlockerStatus = "OPEN" | "RESOLVED";
+/**
+ * Blockers move OPEN -> RESOLUTION_REQUESTED (intern asked for confirmation) or
+ * straight OPEN -> RESOLVED (mentor/manager resolves directly) -> terminal.
+ */
+export type BlockerStatus = "OPEN" | "RESOLUTION_REQUESTED" | "RESOLVED";
 
 export interface Blocker {
   id: string;
@@ -108,8 +114,26 @@ export interface Blocker {
   description: string;
   status: BlockerStatus;
   createdBy: string;
+  createdByName: string;
   createdAt: number;
+  resolutionRequestedAt: number | null;
+  resolutionRequestedBy: string | null;
   resolvedAt: number | null;
+  resolvedBy: string | null;
+  resolvedByName: string | null;
+  resolutionNote: string | null;
+  /** True once any mentor has posted a blocker_comments row — drives escalation timing. */
+  mentorResponded: boolean;
+}
+
+export interface BlockerComment {
+  id: string;
+  blockerId: string;
+  authorId: string;
+  authorName: string;
+  authorRole: Role | null;
+  content: string;
+  createdAt: number;
 }
 
 export type UpdateType = "DAILY" | "WEEKLY" | "GENERAL";
@@ -138,10 +162,16 @@ export type ActivityType =
   | "task.moved"
   | "task.completed"
   | "task.deleted"
+  | "task.priority_changed"
   | "blocker.raised"
+  | "blocker.commented"
+  | "blocker.resolution_requested"
   | "blocker.resolved"
+  | "blocker.escalated"
   | "update.posted"
-  | "feedback.posted";
+  | "feedback.posted"
+  | "weekly.manager_override"
+  | "workspace.member_added";
 
 export interface ActivityEntry {
   id: string;
@@ -176,19 +206,32 @@ export interface WorkspaceSnapshot {
   schemaVersion: number;
   workspaceId: string;
   you: { userId: string; displayName: string; role: Role | null };
+  members: WorkspaceMember[];
   tasks: Task[];
-  /** OPEN blockers plus a bounded tail of recently RESOLVED ones. */
+  /** OPEN/RESOLUTION_REQUESTED blockers plus a bounded tail of recently RESOLVED ones. */
   blockers: Blocker[];
+  blockerComments: BlockerComment[];
   updates: ProgressUpdate[];
   feedback: Feedback[];
   activity: ActivityEntry[];
   presence: PresenceState;
   /** Phase 4B: reminders addressed to the connecting user (by role, or directly). */
   reminders: Reminder[];
+  /** Role-curated "needs attention" items derived from current DO state. */
+  attentionItems: AttentionItem[];
+  /** Mentions addressed to the connecting user. */
+  mentions: Mention[];
   /** Stage 1 (finish): workspace file attachments (metadata only; bytes live in R2). */
   attachments: Attachment[];
   /** Phase 4B: weekly reports visible to the connecting user. */
   weeklyReports: WeeklyReport[];
+}
+
+export interface WorkspaceMember {
+  userId: string;
+  displayName: string;
+  role: Role;
+  handle: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,10 +264,68 @@ export interface Reminder {
 }
 
 // ---------------------------------------------------------------------------
+// Role-curated attention engine + @mentions
+// ---------------------------------------------------------------------------
+
+export type AttentionReason =
+  // intern
+  | "REVIEW_CHANGES_REQUESTED"
+  | "MENTIONED"
+  | "TASK_URGENT_DUE_TODAY"
+  | "TASK_OVERDUE"
+  | "BLOCKER_RESOLUTION_REJECTED"
+  // mentor
+  | "BLOCKER_WAITING_ON_YOU"
+  | "BLOCKER_NO_MENTOR_RESPONSE"
+  | "REPORT_READY_FOR_REVIEW"
+  | "URGENT_TASK_NEEDS_GUIDANCE"
+  | "INTERN_STALE"
+  // manager
+  | "BLOCKER_UNRESOLVED_TOO_LONG"
+  | "URGENT_TASK_STILL_BLOCKED"
+  | "MENTOR_REVIEW_OVERDUE"
+  | "REPORT_WAITING_TOO_LONG"
+  | "ESCALATION";
+
+export type AttentionEntityType = "TASK" | "BLOCKER" | "WEEKLY_REPORT" | "MENTION";
+
+export interface AttentionItem {
+  id: string;
+  recipientUserId: string | null;
+  recipientRole: Role;
+  reason: AttentionReason;
+  title: string;
+  message: string;
+  entityType: AttentionEntityType;
+  entityId: string;
+  createdAt: number;
+  /** Client navigation hint: which tab + entity to focus. */
+  navigate: { tab: "overview" | "board" | "blockers" | "weekly" | "feedback" | "activity"; entityId: string | null };
+}
+
+export type MentionSourceType = "TASK_COMMENT" | "BLOCKER_COMMENT" | "UPDATE" | "WEEKLY_REVIEW";
+
+export interface Mention {
+  id: string;
+  mentionedUserId: string;
+  mentionedByName: string;
+  sourceType: MentionSourceType;
+  sourceId: string;
+  snippet: string;
+  createdAt: number;
+  readAt: number | null;
+}
+
+// ---------------------------------------------------------------------------
 // Phase 4B: weekly progress review (workspace-local; a Workflow drives it)
 // ---------------------------------------------------------------------------
 
-export type WeeklyReportStatus = "DRAFT" | "SUBMITTED" | "CHANGES_REQUESTED" | "APPROVED";
+export type WeeklyReportStatus =
+  | "DRAFT"
+  | "SUBMITTED"
+  | "CHANGES_REQUESTED"
+  | "RESUBMITTED"
+  | "APPROVED";
 
 export interface WeeklyReport {
   id: string;
@@ -240,6 +341,9 @@ export interface WeeklyReport {
   submittedAt: number | null;
   mentorReviewedAt: number | null;
   finalizedAt: number | null;
+  /** Set only when a manager overrode the mentor review — distinct audit trail. */
+  overriddenBy: string | null;
+  overriddenByName: string | null;
 }
 
 export type WeeklyReviewDecision = "APPROVE" | "REQUEST_CHANGES";
@@ -426,12 +530,17 @@ export const AGENT_QUICK_PROMPTS: readonly string[] = [
 
 /** client -> Durable Object. Every mutation carries a client-generated requestId. */
 export type ClientMessage =
-  | { type: "task.create"; requestId: string; title: string; description?: string | null; priority?: TaskPriority | null; assigneeId?: string | null; status?: TaskStatus }
+  | { type: "task.create"; requestId: string; title: string; description?: string | null; priority?: TaskPriority | null; dueDate?: number | null; assigneeId?: string | null; status?: TaskStatus }
   | { type: "task.update"; requestId: string; id: string; patch: TaskPatch }
   | { type: "task.move"; requestId: string; id: string; status: TaskStatus }
   | { type: "task.delete"; requestId: string; id: string }
+  /** Mentor/manager narrow priority-only edit — cannot touch status/title/etc. */
+  | { type: "task.priority"; requestId: string; id: string; priority: TaskPriority }
   | { type: "blocker.create"; requestId: string; description: string; taskId?: string | null }
-  | { type: "blocker.resolve"; requestId: string; id: string }
+  | { type: "blocker.comment"; requestId: string; id: string; content: string }
+  | { type: "blocker.requestResolution"; requestId: string; id: string }
+  | { type: "blocker.resolve"; requestId: string; id: string; note: string }
+  | { type: "blocker.escalate"; requestId: string; id: string; note?: string | null }
   | { type: "update.create"; requestId: string; content: string; updateType?: UpdateType }
   | { type: "feedback.create"; requestId: string; content: string; taskId?: string | null }
   | { type: "ping"; t: number };
@@ -445,6 +554,7 @@ export type ServerMessage =
   | { type: "task.updated"; task: Task }
   | { type: "task.deleted"; id: string }
   | { type: "blocker.created"; blocker: Blocker }
+  | { type: "blocker.commented"; blocker: Blocker; comment: BlockerComment }
   | { type: "blocker.resolved"; blocker: Blocker }
   | { type: "update.created"; update: ProgressUpdate }
   | { type: "feedback.created"; feedback: Feedback }
@@ -452,6 +562,8 @@ export type ServerMessage =
   | { type: "presence.updated"; presence: PresenceState }
   | { type: "reminder.created"; reminder: Reminder }
   | { type: "reminder.updated"; reminder: Reminder }
+  | { type: "mention.created"; mention: Mention }
+  | { type: "attention.updated"; items: AttentionItem[] }
   | { type: "weekly.updated"; report: WeeklyReport }
   | { type: "attachment.created"; attachment: Attachment }
   | { type: "attachment.updated"; attachment: Attachment }

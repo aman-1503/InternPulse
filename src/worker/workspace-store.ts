@@ -16,7 +16,10 @@ import {
   type Attachment,
   type AttachmentIndexStatus,
   type Blocker,
+  type BlockerComment,
   type Feedback,
+  type Mention,
+  type MentionSourceType,
   type ProgressUpdate,
   type Reminder,
   type ReminderEntityType,
@@ -58,9 +61,118 @@ export class WorkspaceStore {
     if (version < 2) this.migrateToV2();
     if (version < 3) this.migrateToV3();
     if (version < 4) this.migrateToV4();
+    if (version < 5) this.migrateToV5();
     if (version < WS_PROTOCOL_VERSION) {
       this.setMeta("schema_version", String(WS_PROTOCOL_VERSION));
     }
+  }
+
+  /**
+   * Product-polish pass: URGENT priority + task due dates, blocker discussion
+   * threads + resolution-requested/resolved-with-note lifecycle, @mentions,
+   * and the weekly RESUBMITTED status + manager-override audit fields.
+   * SQLite CHECK constraints can't be altered in place, so tasks/blockers/
+   * weekly_reports are rebuilt with the same rename-and-copy pattern used by
+   * migrateToV2 for `updates`.
+   */
+  private migrateToV5(): void {
+    this.sql.exec(`
+      CREATE TABLE tasks__v5 (
+        id          TEXT PRIMARY KEY,
+        title       TEXT NOT NULL,
+        description  TEXT,
+        status      TEXT NOT NULL DEFAULT 'TODO'
+                      CHECK (status IN ('TODO','IN_PROGRESS','BLOCKED','DONE')),
+        priority    TEXT CHECK (priority IN ('LOW','MEDIUM','HIGH','URGENT')),
+        due_date    INTEGER,
+        assignee_id TEXT,
+        created_by  TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+      INSERT INTO tasks__v5 (id, title, description, status, priority, assignee_id, created_by, created_at, updated_at)
+        SELECT id, title, description, status, priority, assignee_id, created_by, created_at, updated_at FROM tasks;
+      DROP TABLE tasks;
+      ALTER TABLE tasks__v5 RENAME TO tasks;
+      CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+      CREATE TABLE blockers__v5 (
+        id                      TEXT PRIMARY KEY,
+        task_id                 TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+        description             TEXT NOT NULL,
+        status                  TEXT NOT NULL DEFAULT 'OPEN'
+                                  CHECK (status IN ('OPEN','RESOLUTION_REQUESTED','RESOLVED')),
+        created_by              TEXT NOT NULL,
+        created_by_name         TEXT NOT NULL DEFAULT '',
+        created_at              INTEGER NOT NULL,
+        resolution_requested_at INTEGER,
+        resolution_requested_by TEXT,
+        resolved_at             INTEGER,
+        resolved_by             TEXT,
+        resolved_by_name        TEXT,
+        resolution_note         TEXT,
+        mentor_responded        INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO blockers__v5 (id, task_id, description, status, created_by, created_at, resolved_at)
+        SELECT id, task_id, description, status, created_by, created_at, resolved_at FROM blockers;
+      DROP TABLE blockers;
+      ALTER TABLE blockers__v5 RENAME TO blockers;
+      CREATE INDEX IF NOT EXISTS idx_blockers_status ON blockers (status);
+
+      CREATE TABLE IF NOT EXISTS blocker_comments (
+        id          TEXT PRIMARY KEY,
+        blocker_id  TEXT NOT NULL REFERENCES blockers(id) ON DELETE CASCADE,
+        author_id   TEXT NOT NULL,
+        author_name TEXT NOT NULL,
+        author_role TEXT,
+        content     TEXT NOT NULL,
+        created_at  INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_blocker_comments_blocker ON blocker_comments (blocker_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS mentions (
+        id                 TEXT PRIMARY KEY,
+        mentioned_user_id  TEXT NOT NULL,
+        mentioned_by_name  TEXT NOT NULL,
+        source_type        TEXT NOT NULL,
+        source_id          TEXT NOT NULL,
+        snippet            TEXT NOT NULL,
+        created_at         INTEGER NOT NULL,
+        read_at            INTEGER
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_mentions_dedup
+        ON mentions (mentioned_user_id, source_type, source_id);
+      CREATE INDEX IF NOT EXISTS idx_mentions_inbox ON mentions (mentioned_user_id, created_at);
+
+      CREATE TABLE weekly_reports__v5 (
+        id                   TEXT PRIMARY KEY,
+        reporting_period     TEXT NOT NULL,
+        status               TEXT NOT NULL DEFAULT 'DRAFT'
+                               CHECK (status IN ('DRAFT','SUBMITTED','CHANGES_REQUESTED','RESUBMITTED','APPROVED')),
+        draft_content        TEXT NOT NULL DEFAULT '',
+        final_content        TEXT,
+        mentor_feedback      TEXT,
+        round                INTEGER NOT NULL DEFAULT 0,
+        ai_generated         INTEGER NOT NULL DEFAULT 1,
+        created_by           TEXT NOT NULL,
+        workflow_instance_id TEXT,
+        created_at           INTEGER NOT NULL,
+        submitted_at         INTEGER,
+        mentor_reviewed_at   INTEGER,
+        finalized_at         INTEGER,
+        overridden_by        TEXT,
+        overridden_by_name   TEXT
+      );
+      INSERT INTO weekly_reports__v5
+        (id, reporting_period, status, draft_content, final_content, mentor_feedback, round,
+         ai_generated, created_by, workflow_instance_id, created_at, submitted_at, mentor_reviewed_at, finalized_at)
+        SELECT id, reporting_period, status, draft_content, final_content, mentor_feedback, round,
+               ai_generated, created_by, workflow_instance_id, created_at, submitted_at, mentor_reviewed_at, finalized_at
+          FROM weekly_reports;
+      DROP TABLE weekly_reports;
+      ALTER TABLE weekly_reports__v5 RENAME TO weekly_reports;
+      CREATE INDEX IF NOT EXISTS idx_weekly_status ON weekly_reports (status);
+    `);
   }
 
   /** Stage 1 (finish): workspace file attachment metadata (bytes live in R2). */
@@ -237,27 +349,27 @@ export class WorkspaceStore {
 
   // -- idempotency -----------------------------------------------------
 
-  /** True if this requestId has already been applied. Pure check, no write. */
-  wasProcessed(requestId: string): boolean {
-    return (
-      this.sql
-        .exec("SELECT 1 FROM processed_requests WHERE request_id = ? LIMIT 1", requestId)
-        .toArray().length > 0
-    );
+  /**
+   * Atomically claims a requestId — call this SYNCHRONOUSLY, before any
+   * `await`, so two identical in-flight messages can't both pass the
+   * not-yet-processed check while the first is still awaiting its async work
+   * (e.g. mention parsing's D1 round-trip). Returns false if already claimed.
+   */
+  claimRequest(requestId: string): boolean {
+    const claimed =
+      this.sql.exec(
+        "INSERT OR IGNORE INTO processed_requests (request_id, created_at) VALUES (?, ?)",
+        requestId,
+        Date.now(),
+      ).rowsWritten > 0;
+    // opportunistic prune so the table can't grow without bound
+    this.sql.exec("DELETE FROM processed_requests WHERE created_at < ?", Date.now() - PROCESSED_TTL_MS);
+    return claimed;
   }
 
-  /** Record a requestId as applied. Call only after a mutation succeeds. */
-  markProcessed(requestId: string): void {
-    this.sql.exec(
-      "INSERT OR IGNORE INTO processed_requests (request_id, created_at) VALUES (?, ?)",
-      requestId,
-      Date.now(),
-    );
-    // opportunistic prune so the table can't grow without bound
-    this.sql.exec(
-      "DELETE FROM processed_requests WHERE created_at < ?",
-      Date.now() - PROCESSED_TTL_MS,
-    );
+  /** Releases a claimed requestId whose mutation failed, so a genuine retry can proceed. */
+  releaseRequest(requestId: string): void {
+    this.sql.exec("DELETE FROM processed_requests WHERE request_id = ?", requestId);
   }
 
   // -- tasks ---------------------------------------------------------
@@ -279,25 +391,34 @@ export class WorkspaceStore {
     description: string | null;
     status: TaskStatus;
     priority: TaskPriority | null;
+    dueDate: number | null;
     assigneeId: string | null;
     createdBy: string;
   }): Task {
     const now = Date.now();
     const id = crypto.randomUUID();
     this.sql.exec(
-      `INSERT INTO tasks (id, title, description, status, priority, assignee_id, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, title, description, status, priority, due_date, assignee_id, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       input.title,
       input.description,
       input.status,
       input.priority,
+      input.dueDate,
       input.assigneeId,
       input.createdBy,
       now,
       now,
     );
     return this.getTask(id)!;
+  }
+
+  /** Mentor/manager narrow priority-only edit — never touches any other column. */
+  setTaskPriority(id: string, priority: TaskPriority): Task | null {
+    if (!this.getTask(id)) return null;
+    this.sql.exec("UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ?", priority, Date.now(), id);
+    return this.getTask(id);
   }
 
   updateTask(id: string, patch: TaskPatch): Task | null {
@@ -315,6 +436,7 @@ export class WorkspaceStore {
     if (patch.description !== undefined) set("description", patch.description);
     if (patch.status !== undefined) set("status", patch.status);
     if (patch.priority !== undefined) set("priority", patch.priority);
+    if (patch.dueDate !== undefined) set("due_date", patch.dueDate);
     if (patch.assigneeId !== undefined) set("assignee_id", patch.assigneeId);
 
     if (fields.length === 0) return existing; // no-op patch, last-write-wins is fine
@@ -338,10 +460,12 @@ export class WorkspaceStore {
 
   // -- blockers ----------------------------------------------------
 
-  /** OPEN blockers plus a bounded tail of the most recently RESOLVED ones. */
+  /** OPEN/RESOLUTION_REQUESTED blockers plus a bounded tail of the most recently RESOLVED ones. */
   listBlockers(): Blocker[] {
     const open = this.sql
-      .exec("SELECT * FROM blockers WHERE status = 'OPEN' ORDER BY created_at DESC")
+      .exec(
+        "SELECT * FROM blockers WHERE status IN ('OPEN','RESOLUTION_REQUESTED') ORDER BY created_at DESC",
+      )
       .toArray()
       .map(toBlocker);
     const resolved = this.sql
@@ -363,30 +487,140 @@ export class WorkspaceStore {
     description: string;
     taskId: string | null;
     createdBy: string;
+    createdByName: string;
   }): Blocker {
     const id = crypto.randomUUID();
     this.sql.exec(
-      `INSERT INTO blockers (id, task_id, description, status, created_by, created_at, resolved_at)
-       VALUES (?, ?, ?, 'OPEN', ?, ?, NULL)`,
+      `INSERT INTO blockers (id, task_id, description, status, created_by, created_by_name, created_at, resolved_at)
+       VALUES (?, ?, ?, 'OPEN', ?, ?, ?, NULL)`,
       id,
       input.taskId,
       input.description,
       input.createdBy,
+      input.createdByName,
       Date.now(),
     );
     return this.getBlocker(id)!;
   }
 
-  /** Resolves an OPEN blocker. Returns the blocker if it was open, null otherwise. */
-  resolveBlocker(id: string): Blocker | null {
+  /** Intern asks mentor/mentor to confirm resolution. Only valid from OPEN. */
+  requestBlockerResolution(id: string, requestedBy: string): Blocker | null {
     const existing = this.getBlocker(id);
     if (!existing || existing.status !== "OPEN") return null;
     this.sql.exec(
-      "UPDATE blockers SET status = 'RESOLVED', resolved_at = ? WHERE id = ?",
+      "UPDATE blockers SET status = 'RESOLUTION_REQUESTED', resolution_requested_at = ?, resolution_requested_by = ? WHERE id = ?",
       Date.now(),
+      requestedBy,
       id,
     );
     return this.getBlocker(id);
+  }
+
+  /** Resolves an OPEN or RESOLUTION_REQUESTED blocker with a required note. */
+  resolveBlocker(
+    id: string,
+    resolvedBy: string,
+    resolvedByName: string,
+    note: string,
+  ): Blocker | null {
+    const existing = this.getBlocker(id);
+    if (!existing || existing.status === "RESOLVED") return null;
+    this.sql.exec(
+      `UPDATE blockers
+          SET status = 'RESOLVED', resolved_at = ?, resolved_by = ?, resolved_by_name = ?, resolution_note = ?
+        WHERE id = ?`,
+      Date.now(),
+      resolvedBy,
+      resolvedByName,
+      note,
+      id,
+    );
+    return this.getBlocker(id);
+  }
+
+  markMentorResponded(blockerId: string): void {
+    this.sql.exec("UPDATE blockers SET mentor_responded = 1 WHERE id = ?", blockerId);
+  }
+
+  addBlockerComment(input: {
+    blockerId: string;
+    authorId: string;
+    authorName: string;
+    authorRole: Role | null;
+    content: string;
+  }): BlockerComment {
+    const id = crypto.randomUUID();
+    this.sql.exec(
+      `INSERT INTO blocker_comments (id, blocker_id, author_id, author_name, author_role, content, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      input.blockerId,
+      input.authorId,
+      input.authorName,
+      input.authorRole,
+      input.content,
+      Date.now(),
+    );
+    if (input.authorRole === "mentor") this.markMentorResponded(input.blockerId);
+    return this.sql
+      .exec("SELECT * FROM blocker_comments WHERE id = ?", id)
+      .toArray()
+      .map(toBlockerComment)[0];
+  }
+
+  listBlockerComments(blockerId: string): BlockerComment[] {
+    return this.sql
+      .exec(
+        "SELECT * FROM blocker_comments WHERE blocker_id = ? ORDER BY created_at ASC",
+        blockerId,
+      )
+      .toArray()
+      .map(toBlockerComment);
+  }
+
+  listAllBlockerComments(limit = 200): BlockerComment[] {
+    return this.sql
+      .exec("SELECT * FROM blocker_comments ORDER BY created_at DESC LIMIT ?", limit)
+      .toArray()
+      .map(toBlockerComment);
+  }
+
+  // -- mentions ------------------------------------------------------
+
+  /** Idempotent per (mentionedUserId, sourceType, sourceId): a retried mutation can't double-mention. */
+  createMention(input: {
+    mentionedUserId: string;
+    mentionedByName: string;
+    sourceType: MentionSourceType;
+    sourceId: string;
+    snippet: string;
+  }): Mention | null {
+    const id = crypto.randomUUID();
+    const res = this.sql.exec(
+      `INSERT OR IGNORE INTO mentions
+         (id, mentioned_user_id, mentioned_by_name, source_type, source_id, snippet, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      input.mentionedUserId,
+      input.mentionedByName,
+      input.sourceType,
+      input.sourceId,
+      input.snippet,
+      Date.now(),
+    );
+    if (res.rowsWritten === 0) return null;
+    return this.sql.exec("SELECT * FROM mentions WHERE id = ?", id).toArray().map(toMention)[0];
+  }
+
+  listMentionsFor(userId: string, limit = 50): Mention[] {
+    return this.sql
+      .exec(
+        "SELECT * FROM mentions WHERE mentioned_user_id = ? ORDER BY created_at DESC LIMIT ?",
+        userId,
+        limit,
+      )
+      .toArray()
+      .map(toMention);
   }
 
   // -- updates ---------------------------------------------------
@@ -650,7 +884,7 @@ export class WorkspaceStore {
     const now = Date.now();
     const sets: string[] = ["status = ?"];
     const vals: SqlStorageValue[] = [status];
-    if (status === "SUBMITTED") {
+    if (status === "SUBMITTED" || status === "RESUBMITTED") {
       sets.push("submitted_at = ?");
       vals.push(now);
     }
@@ -670,6 +904,18 @@ export class WorkspaceStore {
     }
     vals.push(id);
     this.sql.exec(`UPDATE weekly_reports SET ${sets.join(", ")} WHERE id = ?`, ...vals);
+    return this.getWeeklyReport(id);
+  }
+
+  /** Records a manager override alongside the normal APPROVED/CHANGES_REQUESTED transition. */
+  setWeeklyOverride(id: string, overriddenBy: string, overriddenByName: string): WeeklyReport | null {
+    if (!this.getWeeklyReport(id)) return null;
+    this.sql.exec(
+      "UPDATE weekly_reports SET overridden_by = ?, overridden_by_name = ? WHERE id = ?",
+      overriddenBy,
+      overriddenByName,
+      id,
+    );
     return this.getWeeklyReport(id);
   }
 
@@ -744,6 +990,7 @@ function toTask(r: Row): Task {
     description: r.description === null ? null : String(r.description),
     status: String(r.status) as TaskStatus,
     priority: r.priority === null ? null : (String(r.priority) as TaskPriority),
+    dueDate: r.due_date === null || r.due_date === undefined ? null : Number(r.due_date),
     assigneeId: r.assignee_id === null ? null : String(r.assignee_id),
     createdBy: String(r.created_by),
     createdAt: Number(r.created_at),
@@ -758,8 +1005,40 @@ function toBlocker(r: Row): Blocker {
     description: String(r.description),
     status: String(r.status) as Blocker["status"],
     createdBy: String(r.created_by),
+    createdByName: r.created_by_name === null || r.created_by_name === undefined ? "" : String(r.created_by_name),
     createdAt: Number(r.created_at),
+    resolutionRequestedAt: r.resolution_requested_at === null || r.resolution_requested_at === undefined ? null : Number(r.resolution_requested_at),
+    resolutionRequestedBy: r.resolution_requested_by === null || r.resolution_requested_by === undefined ? null : String(r.resolution_requested_by),
     resolvedAt: r.resolved_at === null ? null : Number(r.resolved_at),
+    resolvedBy: r.resolved_by === null || r.resolved_by === undefined ? null : String(r.resolved_by),
+    resolvedByName: r.resolved_by_name === null || r.resolved_by_name === undefined ? null : String(r.resolved_by_name),
+    resolutionNote: r.resolution_note === null || r.resolution_note === undefined ? null : String(r.resolution_note),
+    mentorResponded: Number(r.mentor_responded ?? 0) === 1,
+  };
+}
+
+function toBlockerComment(r: Row): BlockerComment {
+  return {
+    id: String(r.id),
+    blockerId: String(r.blocker_id),
+    authorId: String(r.author_id),
+    authorName: String(r.author_name),
+    authorRole: r.author_role === null ? null : (String(r.author_role) as Role),
+    content: String(r.content),
+    createdAt: Number(r.created_at),
+  };
+}
+
+function toMention(r: Row): Mention {
+  return {
+    id: String(r.id),
+    mentionedUserId: String(r.mentioned_user_id),
+    mentionedByName: String(r.mentioned_by_name),
+    sourceType: String(r.source_type) as MentionSourceType,
+    sourceId: String(r.source_id),
+    snippet: String(r.snippet),
+    createdAt: Number(r.created_at),
+    readAt: r.read_at === null ? null : Number(r.read_at),
   };
 }
 
@@ -828,6 +1107,8 @@ function toWeekly(r: Row): WeeklyReport {
     submittedAt: r.submitted_at === null ? null : Number(r.submitted_at),
     mentorReviewedAt: r.mentor_reviewed_at === null ? null : Number(r.mentor_reviewed_at),
     finalizedAt: r.finalized_at === null ? null : Number(r.finalized_at),
+    overriddenBy: r.overridden_by === null || r.overridden_by === undefined ? null : String(r.overridden_by),
+    overriddenByName: r.overridden_by_name === null || r.overridden_by_name === undefined ? null : String(r.overridden_by_name),
   };
 }
 

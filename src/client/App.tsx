@@ -43,6 +43,7 @@ export function App() {
       {route.view === "overview" ? (
         <ManagerOverview
           identity={identity}
+          devRole={devRole}
           onOpenWorkspace={(id) => navigate(`#/w/${id}`)}
         />
       ) : (

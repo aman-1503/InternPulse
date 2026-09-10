@@ -30,6 +30,9 @@
     // Override with short values in .dev.vars for fast local tests.
     "BLOCKER_REMINDER_DELAY": "1 hour",
     "BLOCKER_ESCALATION_DELAY": "1 day",
+    // Shorter delays used when the blocker's linked task is URGENT/HIGH priority.
+    "BLOCKER_REMINDER_DELAY_URGENT": "15 minutes",
+    "BLOCKER_ESCALATION_DELAY_URGENT": "1 hour",
     "WEEKLY_STEP_TIMEOUT": "3 days",
     "WEEKLY_MAX_ROUNDS": "3"
   },

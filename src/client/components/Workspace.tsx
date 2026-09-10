@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useWorkspace } from "../lib/useWorkspace";
 import { PresenceBar } from "./Presence";
 import { RemindersPanel } from "./RemindersPanel";
+import { AddMemberForm } from "./AddMemberForm";
 import { Board } from "./board/Board";
 import { OverviewTab } from "./tabs/OverviewTab";
 import { BlockersTab } from "./tabs/BlockersTab";
@@ -49,11 +50,31 @@ export function Workspace({
     };
   }, [workspaceId]);
 
+  if (ws.status === "unauthorized") {
+    return (
+      <div className="workspace">
+        <div className="card unauthorized-card">
+          <h2>You don't have access to this workspace</h2>
+          <p className="meta">
+            {identity.displayName} is not a member of <code>{workspaceId}</code>. Ask a mentor or
+            manager of that workspace to add you, or go back and pick one you belong to.
+          </p>
+          <button className="primary" onClick={() => (window.location.hash = "#/overview")}>
+            ← Back to overview
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const role = ws.you?.role ?? null;
-  const canEditBoard = role === "intern" || role === "mentor";
-  const openBlockers = ws.blockers.filter((b) => b.status === "OPEN").length;
-  const openReminders = ws.reminders.filter((r) => r.status === "OPEN").length;
+  const openBlockers = ws.blockers.filter((b) => b.status !== "RESOLVED").length;
+  const attentionCount = ws.attentionItems.length;
   const pendingWeekly = ws.weeklyReports.filter((r) => r.status !== "APPROVED").length;
+  const commentCounts: Record<string, number> = {};
+  for (const f of ws.feedback) {
+    if (f.taskId) commentCounts[f.taskId] = (commentCounts[f.taskId] ?? 0) + 1;
+  }
 
   return (
     <div className="workspace">
@@ -69,11 +90,16 @@ export function Workspace({
           </p>
         </div>
         <div className="workspace-head-right">
+          {(role === "mentor" || role === "manager") && (
+            <AddMemberForm workspaceId={workspaceId} identity={identity} devRole={devRole} members={ws.members} />
+          )}
           <RemindersPanel
+            items={ws.attentionItems}
             reminders={ws.reminders}
             workspaceId={workspaceId}
             identity={identity}
             devRole={devRole}
+            onNavigate={(t) => setTab(t as Tab)}
           />
           <PresenceBar presence={ws.presence} status={ws.status} />
         </div>
@@ -97,8 +123,8 @@ export function Workspace({
               <span className="count danger">{openBlockers}</span>
             )}
             {t === "Weekly" && pendingWeekly > 0 && <span className="count">{pendingWeekly}</span>}
-            {t === "Overview" && openReminders > 0 && (
-              <span className="count danger">{openReminders}</span>
+            {t === "Overview" && attentionCount > 0 && (
+              <span className="count danger">{attentionCount}</span>
             )}
           </button>
         ))}
@@ -106,7 +132,15 @@ export function Workspace({
 
       <div className="tab-body">
         {tab === "Overview" && <OverviewTab state={ws} actions={ws.actions} />}
-        {tab === "Board" && <Board tasks={ws.tasks} canEdit={canEditBoard} actions={ws.actions} />}
+        {tab === "Board" && (
+          <Board
+            tasks={ws.tasks}
+            role={role}
+            userId={identity.userId}
+            commentCounts={commentCounts}
+            actions={ws.actions}
+          />
+        )}
         {tab === "Blockers" && <BlockersTab state={ws} actions={ws.actions} />}
         {tab === "Feedback" && <FeedbackTab state={ws} actions={ws.actions} />}
         {tab === "Activity" && <ActivityTab state={ws} />}

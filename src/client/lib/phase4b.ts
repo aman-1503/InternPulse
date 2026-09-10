@@ -86,3 +86,19 @@ export function reviewWeeklyReport(
     body: JSON.stringify({ decision, feedback }),
   });
 }
+
+/** Manager overrides a stuck mentor review. Recorded in the report's audit fields. */
+export function overrideWeeklyReport(
+  workspaceId: string,
+  identity: Identity,
+  devRole: string,
+  reportId: string,
+  decision: WeeklyReviewDecision,
+  note: string,
+): Promise<{ ok: true }> {
+  return req(`${base(workspaceId)}/weekly/${reportId}/override?${qs(identity, devRole)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ decision, note }),
+  });
+}

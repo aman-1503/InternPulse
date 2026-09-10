@@ -792,3 +792,108 @@ button:disabled {
 .next-actions .list li {
   font-size: 0.9rem;
 }
+
+/* ---- product-polish pass ---- */
+.badge.pri-URGENT {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.badge.status-open {
+  color: var(--danger);
+}
+.badge.status-resolution_requested {
+  color: #fbbf24;
+}
+.badge.status-resolved {
+  color: var(--ok);
+}
+button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.blocker-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.blocker-card.resolved {
+  opacity: 0.7;
+}
+.blocker-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.blocker-comments {
+  margin: 0;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--line);
+  gap: 0.25rem;
+}
+.blocker-comments li {
+  font-size: 0.85rem;
+}
+.resolution-note {
+  font-style: italic;
+}
+.blocker-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.task-card.overdue {
+  border-color: var(--danger);
+}
+.meta.due {
+  font-size: 0.72rem;
+}
+.overdue-text {
+  color: var(--danger);
+}
+.weekly-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: center;
+  margin: 0.5rem 0;
+  font-size: 0.75rem;
+}
+.weekly-stepper .step {
+  color: var(--muted);
+}
+.weekly-stepper .step.done {
+  color: var(--ok);
+}
+.weekly-stepper .step.active {
+  color: var(--text);
+  font-weight: 700;
+}
+.weekly-stepper .arrow {
+  margin: 0 0.25rem;
+  color: var(--muted);
+}
+.reminder-item-clickable {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+.new-workspace-form {
+  max-width: 32rem;
+}
+.unauthorized-card {
+  max-width: 32rem;
+  margin: 3rem auto;
+  text-align: center;
+}
+.unauthorized-card button {
+  margin-top: 0.75rem;
+}
+

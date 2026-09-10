@@ -13,6 +13,8 @@ interface __BaseEnv_Env {
 	AGENT_FAKE_AI: string;
 	BLOCKER_REMINDER_DELAY: string;
 	BLOCKER_ESCALATION_DELAY: string;
+	BLOCKER_REMINDER_DELAY_URGENT: string;
+	BLOCKER_ESCALATION_DELAY_URGENT: string;
 	WEEKLY_STEP_TIMEOUT: string;
 	WEEKLY_MAX_ROUNDS: string;
 	WORKSPACE_DO: DurableObjectNamespace<import("./src/worker/index").WorkspaceDO>;

@@ -35,52 +35,70 @@ export class BlockerWorkflow extends WorkflowEntrypoint<Env, BlockerParams> {
         workspaceId,
       );
 
-    await step.sleep(
-      "wait-for-reminder",
-      (this.env.BLOCKER_REMINDER_DELAY || "1 hour") as WorkflowSleepDuration,
-    );
+    // Escalate sooner when the linked task is URGENT/HIGH — read once, up front.
+    const urgency = await step.do("read-linked-task-priority", async () => {
+      const b = await workspace().getBlocker(blockerId);
+      if (!b?.taskId) return { urgent: false };
+      const task = await workspace().getTask(b.taskId);
+      return { urgent: task?.priority === "URGENT" || task?.priority === "HIGH" };
+    });
+    const reminderDelay = (
+      urgency.urgent
+        ? this.env.BLOCKER_REMINDER_DELAY_URGENT || this.env.BLOCKER_REMINDER_DELAY || "15 minutes"
+        : this.env.BLOCKER_REMINDER_DELAY || "1 hour"
+    ) as WorkflowSleepDuration;
+    const escalationDelay = (
+      urgency.urgent
+        ? this.env.BLOCKER_ESCALATION_DELAY_URGENT || this.env.BLOCKER_ESCALATION_DELAY || "1 hour"
+        : this.env.BLOCKER_ESCALATION_DELAY || "1 day"
+    ) as WorkflowSleepDuration;
+
+    await step.sleep("wait-for-reminder", reminderDelay);
 
     const beforeReminder = await step.do("check-before-reminder", async () => {
       const b = await workspace().getBlocker(blockerId);
-      return { status: b ? b.status : ("deleted" as const) };
+      if (!b) return { status: "deleted" as const, mentorResponded: false };
+      return { status: b.status, mentorResponded: b.mentorResponded };
     });
-    if (beforeReminder.status !== "OPEN") {
+    if (beforeReminder.status === "RESOLVED" || beforeReminder.status === "deleted") {
       return { outcome: "stopped_before_reminder", state: beforeReminder.status };
     }
 
-    const remindResult = await step.do("create-reminders", async () => {
-      const a = await agent();
-      const intern = await a.draftBlockerReminder(workspaceId, blockerId, "intern");
-      const mentor = await a.draftBlockerReminder(workspaceId, blockerId, "mentor");
-      await workspace().createReminder({
-        recipientUserId: null,
-        recipientRole: "intern",
-        type: "BLOCKER_REMINDER",
-        entityType: "BLOCKER",
-        entityId: blockerId,
-        message: intern.text,
-      });
-      await workspace().createReminder({
-        recipientUserId: null,
-        recipientRole: "mentor",
-        type: "BLOCKER_REMINDER",
-        entityType: "BLOCKER",
-        entityId: blockerId,
-        message: mentor.text,
-      });
-      return { usedAI: intern.usedAI && mentor.usedAI };
-    });
+    // A mentor who has already commented doesn't need the "please respond"
+    // nudge — but escalation (about prolonged non-resolution, not responsiveness)
+    // still proceeds below.
+    const remindResult = beforeReminder.mentorResponded
+      ? { usedAI: false, skipped: true }
+      : await step.do("create-reminders", async () => {
+          const a = await agent();
+          const intern = await a.draftBlockerReminder(workspaceId, blockerId, "intern");
+          const mentor = await a.draftBlockerReminder(workspaceId, blockerId, "mentor");
+          await workspace().createReminder({
+            recipientUserId: null,
+            recipientRole: "intern",
+            type: "BLOCKER_REMINDER",
+            entityType: "BLOCKER",
+            entityId: blockerId,
+            message: intern.text,
+          });
+          await workspace().createReminder({
+            recipientUserId: null,
+            recipientRole: "mentor",
+            type: "BLOCKER_REMINDER",
+            entityType: "BLOCKER",
+            entityId: blockerId,
+            message: mentor.text,
+          });
+          return { usedAI: intern.usedAI && mentor.usedAI, skipped: false };
+        });
 
-    await step.sleep(
-      "wait-for-escalation",
-      (this.env.BLOCKER_ESCALATION_DELAY || "1 day") as WorkflowSleepDuration,
-    );
+    await step.sleep("wait-for-escalation", escalationDelay);
 
     const beforeEscalation = await step.do("check-before-escalation", async () => {
       const b = await workspace().getBlocker(blockerId);
       return { status: b ? b.status : ("deleted" as const) };
     });
-    if (beforeEscalation.status !== "OPEN") {
+    if (beforeEscalation.status === "RESOLVED" || beforeEscalation.status === "deleted") {
       return {
         outcome: "stopped_before_escalation",
         state: beforeEscalation.status,
