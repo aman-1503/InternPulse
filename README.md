@@ -77,7 +77,15 @@ intern progress, mentor guidance, and manager visibility.
 
 ## Roles
 
-Three roles, resolved once per request at **`resolveRole()`** in `src/worker/index.ts` — the single authorization seam.
+Three **workspace** roles, resolved once per request at **`resolveRole()`** in
+`src/worker/index.ts` — the single authorization seam, reading D1 `memberships`.
+A user's role can differ per workspace (e.g. mentor in one, manager in another).
+
+There is also a separate **platform** role, `platform_role` on the `users`
+table: `USER` (default) or `ADMIN`. Platform admin is operational/support
+authority (user/account/membership repair, audit visibility) — it is *not*
+"manager of every workspace" and is never granted from a client-supplied
+value. See [Production authentication](#production-authentication-cloudflare-access) below.
 
 | Action | intern | mentor | manager | no membership |
 |---|:--:|:--:|:--:|:--:|
@@ -117,6 +125,98 @@ _No screenshots are checked in yet._ Placeholders — capture from the live demo
 
 ---
 
+## Production authentication (Cloudflare Access)
+
+InternPulse's real identity/session layer is **Cloudflare Access** — it never
+implements its own password storage, login form, or session cookie. Access
+answers *"who is this authenticated person?"*; D1 answers *"what InternPulse
+user/role/workspace access do they have?"*. See `src/worker/access-auth.ts`
+for the exact verification and the module comments throughout
+`src/worker/*.ts` for the full identity model this pass introduced.
+
+### Two identity paths, deliberately separate
+
+| | Path | Identity source | Data |
+|---|---|---|---|
+| Production | any `/api/*` route not under `/api/demo/` | verified Cloudflare Access JWT (`Cf-Access-Jwt-Assertion` header), cryptographically checked — see below | real workspaces (`is_demo = 0`) |
+| Demo | `/api/demo/*` | the old unauthenticated `userId`/`displayName`/`devRole` query params (unchanged, for reviewers) | demo-seeded workspaces only (`is_demo = 1`) |
+
+A workspace's `is_demo` flag is checked on **every** route in both directions:
+a production request can never reach a demo workspace, and a demo request can
+never reach a real one — even if it somehow knew the id. Set `DEMO_MODE=off`
+to disable `/api/demo/*` entirely in a deployment that should never expose
+sample data.
+
+### How the JWT is verified
+
+`getAuthenticatedIdentity(request, env)` in `src/worker/access-auth.ts`:
+
+1. reads `Cf-Access-Jwt-Assertion` from the request (Access injects this
+   header for both ordinary requests and WebSocket upgrades, once your
+   hostname is behind an Access application and the browser has an Access
+   session cookie — the browser WebSocket API can't set custom headers, but
+   it doesn't need to here);
+2. verifies the signature against your Access team's JWKS
+   (`https://<team>/cdn-cgi/access/certs`, fetched via `jose`'s
+   `createRemoteJWKSet`, cached);
+3. checks `iss` against `https://<ACCESS_TEAM_DOMAIN>` and `aud` against
+   `ACCESS_AUD`, and rejects an expired token;
+4. returns `{ subject, email, name?, identityProvider? }` — or throws
+   `AccessAuthError`, which every route maps to `401`.
+
+Nothing downstream (D1, `resolveRole`, `canMutate`, the `WorkspaceDO`) ever
+sees or trusts a client-supplied `userId`/`role`/`displayName` on a production
+route. `resolveProductionUser()` in `src/worker/production-identity.ts` then
+upserts/looks up the D1 `users` row for that verified identity (linking a
+pre-existing row by email on first login rather than duplicating it), and
+`platform_role`/`account_status` gate further access from there.
+
+### Dashboard setup required (not done by this repo — see [Deployment checkpoint](#deployment-checkpoint))
+
+1. **Zero Trust → Access → Applications → Add an application** (Self-hosted),
+   pointing at your Worker's production hostname.
+2. Add an **Access policy** (e.g. "Allow" for your organization's identity
+   provider — Google Workspace, GitHub, one-time PIN, etc.) — configure the
+   identity provider under **Settings → Authentication** first if needed.
+3. Copy the application's **Audience (AUD) tag** from the application's
+   Overview page.
+4. Note your **team domain** (`<team-name>.cloudflareaccess.com`, or a custom
+   domain if configured under **Settings → Custom Pages/Domains**).
+5. Set on the Worker (`wrangler secret put` or `.dev.vars` locally — see
+   `.dev.vars.example`):
+   - `ACCESS_TEAM_DOMAIN` — your team domain (not secret, but Worker-specific)
+   - `ACCESS_AUD` — the Application AUD tag (not secret)
+   - `ADMIN_EMAILS` — comma-separated emails to bootstrap as platform `ADMIN`
+     on their first login (see below)
+
+None of `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD` / `ADMIN_EMAILS` are secrets in
+the credential sense (they don't grant access on their own — Access still
+enforces its own policy at the edge), but treat `ADMIN_EMAILS` as sensitive
+configuration; prefer `wrangler secret put ADMIN_EMAILS` over committing it.
+**Never commit an actual Access service-token secret or API token.**
+
+### Platform admin bootstrap
+
+There is no default/shared admin account. The **first** time a verified
+identity whose email is in `ADMIN_EMAILS` logs in, their newly-created D1 user
+row gets `platform_role = 'ADMIN'` (see `isBootstrapAdmin()` in
+`production-identity.ts`). This is **not** retroactive — removing or adding an
+email to `ADMIN_EMAILS` later doesn't change an existing user's role; use the
+admin API (`POST /api/admin/users/:id/suspend|activate|disable`) or a
+deliberate D1 update for that. Admin routes live under `/api/admin/*` and
+require `platform_role === 'ADMIN'`, checked server-side on every request —
+see `src/worker/admin-routes.ts`.
+
+### Account status
+
+`users.account_status` is `ACTIVE` (default), `SUSPENDED`, or `DISABLED`.
+InternPulse does **not** implement password reset — that happens at the
+Access/IdP layer. A non-`ACTIVE` account is denied every production route
+(`403 account_suspended` / `403 account_disabled`) before any workspace
+authorization is even considered; only a platform admin can restore `ACTIVE`.
+
+---
+
 ## Local setup
 
 Requires **Node.js ≥ 22** (`.nvmrc` present) and npm.
@@ -132,9 +232,22 @@ npm run dev                         # http://localhost:5173
 npm run demo:seed                   # (in another shell, once dev is up) populate the demo workspace
 ```
 
-Open the app → use the **demo identity switcher** (top-right) to become Alice
-Chen (intern), Mia Rivera (mentor), or Jordan Park (manager). Open the same
-workspace in a second browser to see realtime sync.
+Without `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` set (the default local config),
+every production (`/api/*` outside `/api/demo/`) route fails closed with
+`401` — this is intentional, not a bug, so local dev without a real Access
+tenant still exercises `/api/demo/*` exactly as before. Open the app and use
+the **demo identity switcher** (top-right) to become Alice Chen (intern), Mia
+Rivera (mentor), or Jordan Park (manager) — it now talks to `/api/demo/*`
+under the hood. Open the same workspace in a second browser to see realtime
+sync.
+
+> **Note:** this pass (production-auth-and-ui backend phase) rewired the
+> client's demo identity flow onto `/api/demo/*` but has not yet rebuilt the
+> UI shell (a dedicated `/demo` route with a visible "DEMO MODE" banner, the
+> production Access-authenticated onboarding screens, role dashboards, and
+> `/admin`) — that's the follow-up UI pass. Until then the client is demo-only
+> end-to-end; the production API surface documented above is live and tested
+> but has no browser UI wired to it yet.
 
 ### Environment variables
 
