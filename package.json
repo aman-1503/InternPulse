@@ -19,10 +19,13 @@
     "demo:seed": "node scripts/demo-seed.mjs",
     "test": "vitest run",
     "load-test": "node scripts/load-test.mjs",
-    "test:prod-smoke": "node scripts/prod-smoke.mjs"
+    "test:prod-smoke": "node scripts/prod-smoke.mjs",
+    "test:qa-adversarial": "node scripts/qa-adversarial.mjs",
+    "test:qa-production-auth": "node scripts/qa-production-auth.mjs"
   },
   "dependencies": {
     "agents": "^0.22.0",
+    "jose": "^6.2.12",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

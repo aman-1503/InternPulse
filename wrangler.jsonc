@@ -15,6 +15,20 @@
   "ai": { "binding": "AI" },
 
   "vars": {
+    // Cloudflare Access — production authentication (see README "Cloudflare
+    // Access setup"). Not secrets: the team domain and Application AUD are
+    // public identifiers, safe to commit. Override per-environment/locally in
+    // .dev.vars. Leaving these unset makes every non-demo route fail closed
+    // with 401 (see access-auth.ts) rather than silently trusting requests.
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": "",
+    // Comma-separated allowlist of emails granted platform_role=ADMIN the
+    // first time they ever log in via Access. Does not retroactively promote
+    // or demote existing users — see production-identity.ts.
+    "ADMIN_EMAILS": "",
+    // Set to "off" to disable the /api/demo/* sandbox entirely (e.g. in a
+    // deployment that should never expose sample data).
+    "DEMO_MODE": "on",
     // Overridable Workers AI model id for the Progress Agent.
     "PROGRESS_AGENT_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
     // "1" => skip real inference AND skip RAG (Vectorize). The agent returns a
