@@ -39,7 +39,7 @@ export function Workspace({
 
   useEffect(() => {
     let live = true;
-    fetch("/api/workspaces")
+    fetch("/api/demo/workspaces")
       .then((r) => r.json() as Promise<{ workspaces?: Array<{ id: string; name: string }> }>)
       .then((d) => {
         if (live) setProjectName(d.workspaces?.find((w) => w.id === workspaceId)?.name ?? null);

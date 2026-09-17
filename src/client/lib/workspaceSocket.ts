@@ -55,7 +55,7 @@ export class WorkspaceSocket {
 
     try {
       const res = await fetch(
-        `/api/workspace/${encodeURIComponent(this.opts.workspaceId)}/snapshot?${qs}`,
+        `/api/demo/workspace/${encodeURIComponent(this.opts.workspaceId)}/snapshot?${qs}`,
       );
       if (res.status === 403) {
         this.opts.onStatusChange("unauthorized");
@@ -77,7 +77,7 @@ export class WorkspaceSocket {
       displayName: this.opts.displayName,
     });
     if (this.opts.devRole) qs.set("devRole", this.opts.devRole);
-    const url = `${scheme}://${location.host}/api/workspace/${encodeURIComponent(
+    const url = `${scheme}://${location.host}/api/demo/workspace/${encodeURIComponent(
       this.opts.workspaceId,
     )}/ws?${qs}`;
 

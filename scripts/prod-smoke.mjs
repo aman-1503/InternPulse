@@ -1,10 +1,15 @@
 /**
  * Small, targeted production smoke test — NOT a load test, NOT the full
  * adversarial suite. Run once after a deploy against the real workspace.
- * Uses real seeded identities (u-alice/u-mia/u-jordan on "demo") already
- * present in production D1. Any test data it creates is clearly labeled and
- * cleaned up where the product supports it (tasks are deleted; blockers are
- * resolved since there is no delete action).
+ *
+ * Exercises the /api/demo/* sandbox (real seeded identities u-alice/u-mia/
+ * u-jordan on the "demo" workspace, already present in production D1) rather
+ * than production Access-authenticated routes — this script has no way to
+ * mint a real Cloudflare Access session. It is NOT a substitute for manually
+ * walking a real Access-authenticated journey after deploy; see README
+ * "Cloudflare Access setup" for that checklist. Any test data it creates is
+ * clearly labeled and cleaned up where the product supports it (tasks are
+ * deleted; blockers are resolved since there is no delete action).
  *
  *   node scripts/prod-smoke.mjs
  */
@@ -28,7 +33,7 @@ function check(label, ok, detail) {
 
 function connect(workspace, userId, displayName) {
   return new Promise((resolve) => {
-    const url = `${WS_BASE}/api/workspace/${workspace}/ws?userId=${encodeURIComponent(userId)}&displayName=${encodeURIComponent(displayName)}`;
+    const url = `${WS_BASE}/api/demo/workspace/${workspace}/ws?userId=${encodeURIComponent(userId)}&displayName=${encodeURIComponent(displayName)}`;
     const ws = new WebSocket(url);
     ws.inbox = [];
     ws.opened = false;
@@ -74,7 +79,7 @@ async function main() {
   // 2. Non-member gets denied.
   const nobody = await connect(WORKSPACE, "qa-smoke-nobody", "QA Smoke Nobody");
   check("non-member's WS connection is denied outright", nobody.opened === false && nobody.inbox.length === 0);
-  const nobodyHttp = await httpJson(`/api/workspace/${WORKSPACE}/snapshot?userId=qa-smoke-nobody&displayName=QA%20Smoke%20Nobody`);
+  const nobodyHttp = await httpJson(`/api/demo/workspace/${WORKSPACE}/snapshot?userId=qa-smoke-nobody&displayName=QA%20Smoke%20Nobody`);
   check("non-member's HTTP snapshot read is denied (403)", nobodyHttp.status === 403);
 
   const mia = await connect(WORKSPACE, "u-mia", "Mia Rivera");
@@ -108,11 +113,11 @@ async function main() {
     }
 
     // 5. Weekly flow opens (read-only — does not start a new review/workflow in prod).
-    const weeklyList = await httpJson(`/api/workspace/${WORKSPACE}/weekly?userId=u-alice&displayName=Alice%20Chen`);
+    const weeklyList = await httpJson(`/api/demo/workspace/${WORKSPACE}/weekly?userId=u-alice&displayName=Alice%20Chen`);
     check("weekly flow opens: GET /weekly returns the report list without error", weeklyList.status === 200 && Array.isArray(weeklyList.body?.reports));
 
     // 6. Agent responds.
-    const agentRes = await httpJson(`/api/workspace/${WORKSPACE}/agent?userId=u-alice&displayName=Alice%20Chen`, {
+    const agentRes = await httpJson(`/api/demo/workspace/${WORKSPACE}/agent?userId=u-alice&displayName=Alice%20Chen`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ prompt: "Summarize current progress" }),
@@ -124,7 +129,7 @@ async function main() {
     );
 
     // 7. Attachment list works (may be legitimately unavailable if R2 isn't enabled on this deploy).
-    const attachRes = await httpJson(`/api/workspace/${WORKSPACE}/attachments?userId=u-alice&displayName=Alice%20Chen`);
+    const attachRes = await httpJson(`/api/demo/workspace/${WORKSPACE}/attachments?userId=u-alice&displayName=Alice%20Chen`);
     check(
       "attachment list works (200 with a list, or a clean 503 if R2 isn't enabled on this deploy)",
       attachRes.status === 200 || attachRes.status === 503,

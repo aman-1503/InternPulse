@@ -25,7 +25,7 @@ export function AddMemberForm({
     setError(null);
     try {
       const qs = new URLSearchParams({ userId: identity.userId, displayName: identity.displayName, devRole });
-      const res = await fetch(`/api/workspace/${encodeURIComponent(workspaceId)}/members?${qs}`, {
+      const res = await fetch(`/api/demo/workspace/${encodeURIComponent(workspaceId)}/members?${qs}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ displayName, email, role }),

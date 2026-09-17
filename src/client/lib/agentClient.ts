@@ -19,7 +19,7 @@ function qs(identity: Identity, devRole: string): string {
 }
 
 function agentUrl(workspaceId: string, identity: Identity, devRole: string): string {
-  return `/api/workspace/${encodeURIComponent(workspaceId)}/agent?${qs(identity, devRole)}`;
+  return `/api/demo/workspace/${encodeURIComponent(workspaceId)}/agent?${qs(identity, devRole)}`;
 }
 
 export type AskResult =

@@ -31,7 +31,7 @@ const ROSTER = [
 function connect(workspace, userId, displayName, devRole) {
   return new Promise((resolve) => {
     const start = performance.now();
-    const url = `${WS_BASE}/api/workspace/${workspace}/ws?userId=${encodeURIComponent(userId)}&displayName=${encodeURIComponent(displayName)}${devRole ? `&devRole=${devRole}` : ""}`;
+    const url = `${WS_BASE}/api/demo/workspace/${workspace}/ws?userId=${encodeURIComponent(userId)}&displayName=${encodeURIComponent(displayName)}${devRole ? `&devRole=${devRole}` : ""}`;
     const ws = new WebSocket(url);
     ws.inbox = [];
     ws.workspace = workspace;

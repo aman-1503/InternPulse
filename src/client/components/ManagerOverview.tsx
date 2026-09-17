@@ -39,7 +39,7 @@ function NewWorkspaceForm({
         displayName: identity.displayName,
         devRole,
       });
-      const res = await fetch(`/api/workspaces?${qs}`, {
+      const res = await fetch(`/api/demo/workspaces?${qs}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: name.trim(), intern, mentor, manager }),
@@ -122,7 +122,7 @@ export function ManagerOverview({
     let live = true;
     setData(null);
     setError(null);
-    fetch(`/api/overview?userId=${encodeURIComponent(identity.userId)}`)
+    fetch(`/api/demo/overview?userId=${encodeURIComponent(identity.userId)}`)
       .then((r) => r.json() as Promise<OverviewResponse>)
       .then((d) => live && setData(d))
       .catch(() => live && setError("Failed to load overview"));

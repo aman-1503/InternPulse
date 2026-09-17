@@ -11,7 +11,7 @@ function qs(identity: Identity, devRole: string): string {
   return p.toString();
 }
 
-const base = (workspaceId: string) => `/api/workspace/${encodeURIComponent(workspaceId)}`;
+const base = (workspaceId: string) => `/api/demo/workspace/${encodeURIComponent(workspaceId)}`;
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);

@@ -12,7 +12,7 @@ function qs(identity: Identity, devRole: string): string {
 }
 
 const base = (workspaceId: string) =>
-  `/api/workspace/${encodeURIComponent(workspaceId)}/attachments`;
+  `/api/demo/workspace/${encodeURIComponent(workspaceId)}/attachments`;
 
 export async function uploadAttachment(
   workspaceId: string,
