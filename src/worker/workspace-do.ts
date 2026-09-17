@@ -826,11 +826,21 @@ export class WorkspaceDO extends DurableObject<Env> {
     };
   }
 
-  /** Reads the Worker-authoritative identity, with plain-param fallbacks for direct testing. */
+  /**
+   * Reads the Worker-authoritative identity. `_uid`/`_name`/`_role` are set
+   * by the Worker only after it has verified the caller (Cloudflare Access
+   * in production, the scoped demo query-param path in demo mode) and
+   * resolved their D1 membership role. There is deliberately no fallback to
+   * raw `userId`/`displayName` query params — this DO is not reachable
+   * directly from the internet (only the Worker holds its binding), and a
+   * request missing `_uid` means it did not go through that authorization
+   * boundary, so it gets treated as unauthenticated/read-only rather than
+   * trusted.
+   */
   private readIdentity(url: URL): SocketAttachment {
     const p = url.searchParams;
-    const userId = p.get("_uid") || p.get("userId") || `anon-${crypto.randomUUID().slice(0, 8)}`;
-    const displayName = p.get("_name") || p.get("displayName") || "Anonymous";
+    const userId = p.get("_uid") ?? `unverified-${crypto.randomUUID().slice(0, 8)}`;
+    const displayName = p.get("_name") ?? "Unverified";
     const rawRole = p.get("_role");
     const role: Role | null =
       rawRole === "intern" || rawRole === "mentor" || rawRole === "manager" ? rawRole : null;

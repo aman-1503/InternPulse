@@ -22,11 +22,16 @@ INSERT OR IGNORE INTO users (id, email, display_name) VALUES
   ('u-sarah',  'sarah@internpulse.dev',  'Sarah Lee'),
   ('u-priya',  'priya@internpulse.dev',  'Priya Nair');
 
-INSERT OR IGNORE INTO workspaces (id, name, slug) VALUES
-  ('demo',       'Authentication / Worker Integration', 'demo'),
-  ('payments',   'Payments Service Revamp',              'payments'),
-  ('rahul-ml',   'ML Pipeline Modernization',            'rahul-ml'),
-  ('sarah-infra','Infra Migration to Workers',           'sarah-infra');
+-- is_demo = 1: these are reachable ONLY via /api/demo/* (see src/worker/index.ts).
+-- Production routes refuse to serve them even if a client already knows the id.
+INSERT OR IGNORE INTO workspaces (id, name, slug, is_demo) VALUES
+  ('demo',       'Authentication / Worker Integration', 'demo',        1),
+  ('payments',   'Payments Service Revamp',              'payments',   1),
+  ('rahul-ml',   'ML Pipeline Modernization',            'rahul-ml',   1),
+  ('sarah-infra','Infra Migration to Workers',           'sarah-infra',1);
+
+-- Idempotent for a pre-existing seed run from before is_demo existed.
+UPDATE workspaces SET is_demo = 1 WHERE id IN ('demo', 'payments', 'rahul-ml', 'sarah-infra');
 
 INSERT OR IGNORE INTO memberships (id, workspace_id, user_id, role) VALUES
   ('mb-demo-alice',      'demo',        'u-alice',  'intern'),
