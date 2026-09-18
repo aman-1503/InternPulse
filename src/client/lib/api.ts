@@ -4,6 +4,7 @@
  * function throws ApiError on a non-2xx response so callers get a
  * consistent, typed shape to render.
  */
+import type { MeUser } from "../auth/types";
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -37,6 +38,20 @@ function postJson<T>(url: string, body: unknown): Promise<T> {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+function patchJson<T>(url: string, body: unknown): Promise<T> {
+  return json<T>(url, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// -- profile -----------------------------------------------------------
+
+export function updateDisplayName(displayName: string): Promise<{ user: MeUser }> {
+  return patchJson("/api/me", { displayName });
 }
 
 // -- workspaces --------------------------------------------------------

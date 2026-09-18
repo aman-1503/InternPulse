@@ -271,7 +271,10 @@ export class WorkspaceDO extends DurableObject<Env> {
     role: Role | null,
   ): Promise<Reminder | null> {
     const reminder = this.store.acknowledgeReminder(id, userId, role);
-    if (reminder) this.broadcast({ type: "reminder.updated", reminder });
+    if (reminder) {
+      this.broadcast({ type: "reminder.updated", reminder });
+      this.broadcastAttentionUpdates();
+    }
     return reminder;
   }
 
@@ -312,7 +315,10 @@ export class WorkspaceDO extends DurableObject<Env> {
     extra: { mentorFeedback?: string | null; round?: number } = {},
   ): Promise<WeeklyReport | null> {
     const report = this.store.setWeeklyStatus(id, status, extra);
-    if (report) this.broadcast({ type: "weekly.updated", report });
+    if (report) {
+      this.broadcast({ type: "weekly.updated", report });
+      this.broadcastAttentionUpdates();
+    }
     return report;
   }
 
@@ -333,6 +339,7 @@ export class WorkspaceDO extends DurableObject<Env> {
         { status: report.status },
       ),
     );
+    this.broadcastAttentionUpdates();
     return report;
   }
 
@@ -440,6 +447,7 @@ export class WorkspaceDO extends DurableObject<Env> {
     try {
       const events = await this.dispatch(msg, who);
       for (const ev of events) this.broadcast(ev);
+      this.broadcastAttentionUpdates();
       this.sendTo(ws, { type: "ack", requestId });
       // Phase 4A: enqueue compact history-index events. Best-effort — the
       // authoritative record is already persisted; Vectorize is not source of
@@ -870,6 +878,39 @@ export class WorkspaceDO extends DurableObject<Env> {
     }
     const members = [...seen.values()];
     return { count: members.length, members };
+  }
+
+  /**
+   * attentionItems is role/user-curated (see attention.ts), so it can't be
+   * broadcast as one shared message the way task/blocker events are — each
+   * connected socket gets its own recomputed list. Without this, an item
+   * (e.g. "blocker waiting on you") would only ever refresh on reconnect,
+   * so a mentor who resolves their own blocker would keep seeing it as
+   * needing attention until they reloaded.
+   */
+  private broadcastAttentionUpdates(): void {
+    const tasks = this.store.listTasks();
+    const blockers = this.store.listBlockers();
+    const weeklyReports = this.store.listWeeklyReports();
+    const lastUpdate = this.store.latestUpdate();
+    const lastUpdateAt = lastUpdate ? lastUpdate.createdAt : null;
+
+    for (const ws of this.liveSockets()) {
+      const who = this.attachmentOf(ws);
+      if (!who.role) continue;
+      const items = computeAttentionItems({
+        role: who.role,
+        userId: who.userId,
+        now: Date.now(),
+        tasks,
+        blockers,
+        weeklyReports,
+        mentions: this.store.listMentionsFor(who.userId),
+        reminders: this.store.listRemindersFor(who.userId, who.role),
+        lastUpdateAt,
+      });
+      this.sendTo(ws, { type: "attention.updated", items });
+    }
   }
 
   private sendTo(ws: WebSocket, msg: ServerMessage): void {

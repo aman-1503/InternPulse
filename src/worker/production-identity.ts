@@ -128,6 +128,25 @@ export async function resolveProductionUser(env: Env, identity: AccessIdentity):
   return { id, email: identity.email, displayName, accountStatus: "ACTIVE", platformRole };
 }
 
+/**
+ * Self-service display name update. Not identity-bearing (email/access_subject
+ * stay untouched) — purely a profile cosmetic, since Access frequently doesn't
+ * supply a `name` claim (e.g. plain "Sign in with Cloudflare"), which
+ * otherwise leaves the user's display name defaulted to their raw email.
+ */
+export async function updateDisplayName(
+  env: Env,
+  userId: string,
+  displayName: string,
+): Promise<ProductionUser | null> {
+  const trimmed = displayName.trim();
+  if (!trimmed) return null;
+  await env.DB.prepare("UPDATE users SET display_name = ?, updated_at = ? WHERE id = ?")
+    .bind(trimmed.slice(0, 200), Date.now(), userId)
+    .run();
+  return getUserById(env, userId);
+}
+
 export async function getUserById(env: Env, userId: string): Promise<ProductionUser | null> {
   const row = await env.DB.prepare(
     "SELECT id, email, display_name, account_status, platform_role FROM users WHERE id = ?",

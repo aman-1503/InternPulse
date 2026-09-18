@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { AttentionItem } from "../../shared/protocol";
 import { timeAgo } from "../lib/format";
 import { badge, badgeTones, btn, cn, meta } from "../ui/primitives";
+import { Popover } from "../ui/Popover";
 
 const NAV_TO_TAB: Record<AttentionItem["navigate"]["tab"], string> = {
   overview: "Overview",
@@ -26,10 +27,12 @@ export function RemindersPanel({
   onNavigate: (tab: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
 
   return (
-    <div className="relative">
+    <>
       <button
+        ref={triggerRef}
         className={cn(btn("default"), items.length > 0 && "border-danger/30 bg-danger-muted text-danger")}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
@@ -38,30 +41,28 @@ export function RemindersPanel({
         {items.length > 0 && <span className={cn(badge(badgeTones.danger), "ml-1")}>{items.length}</span>}
       </button>
 
-      {open && (
-        <div className="absolute right-0 z-20 mt-2 w-80 max-w-[90vw] rounded-lg border border-border bg-surface p-2 shadow-lg">
-          {items.length === 0 && <p className={cn(meta, "p-2")}>Nothing needs your attention right now.</p>}
-          <ul className="flex flex-col gap-1">
-            {items.map((it) => (
-              <li key={it.id}>
-                <button
-                  className="w-full rounded-md p-2 text-left hover:bg-surface-muted"
-                  onClick={() => {
-                    onNavigate(NAV_TO_TAB[it.navigate.tab] ?? "Overview");
-                    setOpen(false);
-                  }}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium text-text">{it.title}</span>
-                    <span className={meta}>{timeAgo(it.createdAt)}</span>
-                  </div>
-                  <div className={cn(meta, "mt-0.5")}>{it.message}</div>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
+      <Popover open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} className="w-96">
+        {items.length === 0 && <p className={cn(meta, "p-2")}>Nothing needs your attention right now.</p>}
+        <ul className="flex flex-col gap-1">
+          {items.map((it) => (
+            <li key={it.id}>
+              <button
+                className="w-full rounded-md p-2 text-left hover:bg-surface-muted"
+                onClick={() => {
+                  onNavigate(NAV_TO_TAB[it.navigate.tab] ?? "Overview");
+                  setOpen(false);
+                }}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="break-words text-sm font-medium text-text">{it.title}</span>
+                  <span className={cn(meta, "shrink-0")}>{timeAgo(it.createdAt)}</span>
+                </div>
+                <div className={cn(meta, "mt-0.5 break-words")}>{it.message}</div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Popover>
+    </>
   );
 }

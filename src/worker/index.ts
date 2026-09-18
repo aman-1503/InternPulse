@@ -13,7 +13,12 @@ import {
   safeFilename,
 } from "./documents";
 import { AccessAuthError, getAuthenticatedIdentity } from "./access-auth";
-import { IdentityConflictError, resolveProductionUser, type ProductionUser } from "./production-identity";
+import {
+  IdentityConflictError,
+  resolveProductionUser,
+  updateDisplayName,
+  type ProductionUser,
+} from "./production-identity";
 import {
   acceptInvitation,
   createInvitation,
@@ -983,6 +988,25 @@ async function handleMe(env: Env, user: ProductionUser): Promise<Response> {
   });
 }
 
+/** PATCH /api/me — self-service display name update only (email/identity are Access-owned). */
+async function handleUpdateMe(env: Env, request: Request, user: ProductionUser): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { displayName?: unknown };
+  if (typeof body.displayName !== "string" || !body.displayName.trim()) {
+    return json({ error: "displayName (non-empty string) is required", code: "bad_request" }, 400);
+  }
+  const updated = await updateDisplayName(env, user.id, body.displayName);
+  if (!updated) return json({ error: "update failed", code: "bad_request" }, 400);
+  return json({
+    user: {
+      id: updated.id,
+      email: updated.email,
+      displayName: updated.displayName,
+      accountStatus: updated.accountStatus,
+      isAdmin: updated.platformRole === "ADMIN",
+    },
+  });
+}
+
 async function handleAcceptInvitation(env: Env, request: Request, user: ProductionUser, invitationId: string): Promise<Response> {
   if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
   const result = await acceptInvitation(env, { invitationId, user });
@@ -1037,6 +1061,13 @@ async function routeApi(request: Request, env: Env, url: URL, pathname: string, 
     const userOrResponse = await requireProductionUser(request, env);
     if (userOrResponse instanceof Response) return userOrResponse;
     return handleMe(env, userOrResponse);
+  }
+
+  if (pathname === "/api/me" && request.method === "PATCH") {
+    if (demoMode) return json({ error: "not available in demo mode", code: "not_found" }, 404);
+    const userOrResponse = await requireProductionUser(request, env);
+    if (userOrResponse instanceof Response) return userOrResponse;
+    return handleUpdateMe(env, request, userOrResponse);
   }
 
   if (pathname.match(/^\/api\/invitations\/[^/]+\/accept$/) && !demoMode) {

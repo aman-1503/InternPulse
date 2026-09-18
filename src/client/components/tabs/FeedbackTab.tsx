@@ -1,27 +1,43 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { WorkspaceActions, WorkspaceState } from "../../lib/useWorkspace";
 import { timeAgo } from "../../lib/format";
 import { btn, card, cn, meta, row, sectionTitle, select, textarea } from "../../ui/primitives";
+import { useMentionSuggestions } from "../../ui/useMentionSuggestions";
+import { MentionSuggestions } from "../../ui/MentionSuggestions";
 
 export function FeedbackTab({ state, actions }: { state: WorkspaceState; actions: WorkspaceActions }) {
-  const canGive = state.you?.role === "mentor";
+  // Backend permits feedback.create from any role with membership (intern/mentor/manager
+  // — see permissions.ts); the UI previously restricted this to mentor-only, which was
+  // stricter than what the server actually enforces.
+  const canGive = state.you?.role !== null && state.you?.role !== undefined;
   const [content, setContent] = useState("");
   const [taskId, setTaskId] = useState("");
+  const contentRef = useRef<HTMLTextAreaElement | null>(null);
+  const mention = useMentionSuggestions(content, setContent, state.members, contentRef);
 
   const taskTitle = (id: string | null) => (id ? (state.tasks.find((t) => t.id === id)?.title ?? "(deleted task)") : null);
 
   return (
     <div className="flex flex-col gap-4">
       <section className={card}>
-        <h3 className={sectionTitle}>Add mentor feedback</h3>
+        <h3 className={sectionTitle}>Add feedback</h3>
         {canGive ? (
           <div className="mt-2 flex flex-col gap-2">
             <textarea
+              ref={contentRef}
               className={textarea}
               rows={3}
-              placeholder="Feedback for the intern"
+              placeholder="Feedback on progress, a task, or general guidance (type @ to mention someone)"
               value={content}
-              onChange={(e) => setContent(e.target.value)}
+              onChange={mention.onFieldChange}
+              onKeyUp={mention.onFieldKeyUp}
+            />
+            <MentionSuggestions
+              open={mention.open}
+              triggerRef={contentRef}
+              suggestions={mention.suggestions}
+              onPick={mention.insert}
+              onClose={mention.close}
             />
             <div className={row}>
               <select className={select} value={taskId} onChange={(e) => setTaskId(e.target.value)}>
@@ -46,7 +62,7 @@ export function FeedbackTab({ state, actions }: { state: WorkspaceState; actions
             </div>
           </div>
         ) : (
-          <p className={cn(meta, "mt-2")}>Only mentors can add feedback.</p>
+          <p className={cn(meta, "mt-2")}>Join this workspace to add feedback.</p>
         )}
       </section>
 

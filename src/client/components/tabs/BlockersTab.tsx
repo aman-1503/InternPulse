@@ -1,13 +1,17 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Blocker } from "../../../shared/protocol";
 import type { WorkspaceActions, WorkspaceState } from "../../lib/useWorkspace";
 import { timeAgo } from "../../lib/format";
 import { btn, card, cn, input, meta, row, select, sectionTitle, textarea } from "../../ui/primitives";
 import { BlockerStatusBadge } from "../../ui/badges";
+import { useMentionSuggestions } from "../../ui/useMentionSuggestions";
+import { MentionSuggestions } from "../../ui/MentionSuggestions";
 
 function BlockerCard({ b, state, actions }: { b: Blocker; state: WorkspaceState; actions: WorkspaceActions }) {
   const role = state.you?.role ?? null;
   const [comment, setComment] = useState("");
+  const commentRef = useRef<HTMLInputElement | null>(null);
+  const mention = useMentionSuggestions(comment, setComment, state.members, commentRef);
   const [note, setNote] = useState("");
   const [showResolve, setShowResolve] = useState(false);
 
@@ -60,15 +64,24 @@ function BlockerCard({ b, state, actions }: { b: Blocker; state: WorkspaceState;
           {canComment && (
             <div className={row}>
               <input
+                ref={commentRef}
                 className={cn(input, "flex-1")}
-                placeholder="Add an update or response…"
+                placeholder="Add an update or response… (type @ to mention someone)"
                 value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && submitComment()}
+                onChange={mention.onFieldChange}
+                onKeyUp={mention.onFieldKeyUp}
+                onKeyDown={(e) => e.key === "Enter" && !mention.open && submitComment()}
               />
               <button className={btn("default")} disabled={!comment.trim()} onClick={submitComment}>
                 Comment
               </button>
+              <MentionSuggestions
+                open={mention.open}
+                triggerRef={commentRef}
+                suggestions={mention.suggestions}
+                onPick={mention.insert}
+                onClose={mention.close}
+              />
             </div>
           )}
           <div className={row}>
