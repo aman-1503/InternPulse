@@ -2,49 +2,39 @@ import { useEffect, useState } from "react";
 import type { WeeklyReport } from "../../../shared/protocol";
 import type { WorkspaceState } from "../../lib/useWorkspace";
 import { timeAgo } from "../../lib/format";
-import {
-  overrideWeeklyReport,
-  reviewWeeklyReport,
-  saveWeeklyDraft,
-  startWeeklyReview,
-  submitWeeklyReport,
-} from "../../lib/phase4b";
+import { overrideWeeklyReport, reviewWeeklyReport, saveWeeklyDraft, startWeeklyReview, submitWeeklyReport } from "../../lib/phase4b";
+import type { WorkspaceMode } from "../../lib/workspaceApi";
+import { btn, card, cn, meta, row, textarea } from "../../ui/primitives";
+import { WeeklyStatusBadge, WarnBadge } from "../../ui/badges";
+import { Banner } from "../../ui/states";
 
 const LIFECYCLE = ["DRAFT", "SUBMITTED", "CHANGES_REQUESTED", "RESUBMITTED", "APPROVED"] as const;
 
 function Stepper({ status }: { status: WeeklyReport["status"] }) {
   const idx = LIFECYCLE.indexOf(status);
   return (
-    <div className="weekly-stepper">
+    <div className="flex flex-wrap items-center gap-1 text-xs">
       {LIFECYCLE.map((s, i) => (
-        <span key={s} className={`step${i === idx ? " active" : ""}${i < idx ? " done" : ""}`}>
+        <span key={s} className={cn("flex items-center gap-1", i === idx ? "font-semibold text-accent" : i < idx ? "text-success" : "text-muted")}>
           {s.replace(/_/g, " ")}
-          {i < LIFECYCLE.length - 1 && <span className="arrow">→</span>}
+          {i < LIFECYCLE.length - 1 && <span className="text-muted">→</span>}
         </span>
       ))}
     </div>
   );
 }
 
-interface Identity {
-  userId: string;
-  displayName: string;
-}
-
 export function WeeklyTab({
   state,
   workspaceId,
-  identity,
-  devRole,
+  mode,
 }: {
   state: WorkspaceState;
   workspaceId: string;
-  identity: Identity;
-  devRole: string;
+  mode: WorkspaceMode;
 }) {
   const role = state.you?.role ?? null;
-  const reports = [...state.weeklyReports].sort((a, b) => b.createdAt - a.createdAt);
-  const visible = reports;
+  const visible = [...state.weeklyReports].sort((a, b) => b.createdAt - a.createdAt);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -69,15 +59,15 @@ export function WeeklyTab({
   };
 
   return (
-    <div className="weekly">
-      <div className="weekly-bar">
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
         {(role === "intern" || role === "mentor") && (
           <button
-            className="primary"
+            className={btn("primary")}
             disabled={busy}
             onClick={() =>
               run(async () => {
-                const { report } = await startWeeklyReview(workspaceId, identity, devRole);
+                const { report } = await startWeeklyReview(workspaceId, mode);
                 setSelectedId(report.id);
               })
             }
@@ -85,22 +75,25 @@ export function WeeklyTab({
             Start weekly review
           </button>
         )}
-        <span className="meta">{visible.length} report(s)</span>
+        <span className={meta}>{visible.length} report(s)</span>
       </div>
 
-      {err && <div className="banner error">{err}</div>}
+      {err && <Banner tone="danger">{err}</Banner>}
 
-      <div className="weekly-list">
+      <div className="flex flex-wrap gap-1.5">
         {visible.map((r) => (
           <button
             key={r.id}
-            className={`weekly-chip${r.id === selected?.id ? " active" : ""}`}
+            className={cn(
+              "flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs",
+              r.id === selected?.id ? "border-accent bg-accent-muted text-accent" : "border-border hover:bg-surface-muted",
+            )}
             onClick={() => setSelectedId(r.id)}
           >
-            {r.reportingPeriod} <span className={`badge status-${r.status}`}>{r.status}</span>
+            {r.reportingPeriod} <WeeklyStatusBadge status={r.status} />
           </button>
         ))}
-        {visible.length === 0 && <p className="meta">No weekly reports yet.</p>}
+        {visible.length === 0 && <p className={meta}>No weekly reports yet.</p>}
       </div>
 
       {selected && (
@@ -109,18 +102,10 @@ export function WeeklyTab({
           report={selected}
           role={role}
           busy={busy}
-          onSave={(content) =>
-            run(() => saveWeeklyDraft(workspaceId, identity, devRole, selected.id, content))
-          }
-          onSubmit={() => run(() => submitWeeklyReport(workspaceId, identity, devRole, selected.id))}
-          onReview={(decision, feedback) =>
-            run(() =>
-              reviewWeeklyReport(workspaceId, identity, devRole, selected.id, decision, feedback),
-            )
-          }
-          onOverride={(decision, note) =>
-            run(() => overrideWeeklyReport(workspaceId, identity, devRole, selected.id, decision, note))
-          }
+          onSave={(content) => run(() => saveWeeklyDraft(workspaceId, mode, selected.id, content))}
+          onSubmit={() => run(() => submitWeeklyReport(workspaceId, mode, selected.id))}
+          onReview={(decision, feedback) => run(() => reviewWeeklyReport(workspaceId, mode, selected.id, decision, feedback))}
+          onOverride={(decision, note) => run(() => overrideWeeklyReport(workspaceId, mode, selected.id, decision, note))}
         />
       )}
     </div>
@@ -144,8 +129,7 @@ function ReportPanel({
   onReview: (decision: "APPROVE" | "REQUEST_CHANGES", feedback?: string) => void;
   onOverride: (decision: "APPROVE" | "REQUEST_CHANGES", note: string) => void;
 }) {
-  const editable =
-    role === "intern" && (report.status === "DRAFT" || report.status === "CHANGES_REQUESTED");
+  const editable = role === "intern" && (report.status === "DRAFT" || report.status === "CHANGES_REQUESTED");
   const reviewable = role === "mentor" && (report.status === "SUBMITTED" || report.status === "RESUBMITTED");
   const overridable = role === "manager" && (report.status === "SUBMITTED" || report.status === "RESUBMITTED");
   const [draft, setDraft] = useState(report.draftContent);
@@ -154,58 +138,54 @@ function ReportPanel({
   const content = report.status === "APPROVED" ? (report.finalContent ?? report.draftContent) : report.draftContent;
 
   return (
-    <div className="card report-panel">
-      <div className="report-head">
+    <div className={cn(card, "flex flex-col gap-3")}>
+      <div className="flex flex-wrap items-center gap-2">
         <strong>{report.reportingPeriod}</strong>
-        <span className={`badge status-${report.status}`}>{report.status}</span>
-        {!report.aiGenerated && <span className="badge warn">deterministic draft (AI was unavailable)</span>}
-        <span className="meta">round {report.round} · created {timeAgo(report.createdAt)}</span>
+        <WeeklyStatusBadge status={report.status} />
+        {!report.aiGenerated && <WarnBadge>deterministic draft (AI was unavailable)</WarnBadge>}
+        <span className={meta}>
+          round {report.round} · created {timeAgo(report.createdAt)}
+        </span>
       </div>
 
       <Stepper status={report.status} />
 
       {report.status === "CHANGES_REQUESTED" && report.mentorFeedback && (
-        <div className="banner">Mentor asked for changes: {report.mentorFeedback}</div>
+        <Banner tone="warning">Mentor asked for changes: {report.mentorFeedback}</Banner>
       )}
       {report.overriddenBy && (
-        <div className="banner">
+        <Banner tone="neutral">
           Manager override by {report.overriddenByName ?? report.overriddenBy}: decided {report.status}.
-        </div>
+        </Banner>
       )}
 
       {editable ? (
         <>
-          <textarea
-            className="report-editor"
-            rows={16}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-          />
-          <div className="row">
-            <button disabled={busy} onClick={() => onSave(draft)}>
+          <textarea className={cn(textarea, "min-h-64")} rows={16} value={draft} onChange={(e) => setDraft(e.target.value)} />
+          <div className={row}>
+            <button className={btn("default")} disabled={busy} onClick={() => onSave(draft)}>
               Save draft
             </button>
-            <button className="primary" disabled={busy} onClick={onSubmit}>
+            <button className={btn("primary")} disabled={busy} onClick={onSubmit}>
               Submit for review
             </button>
           </div>
         </>
       ) : (
-        <pre className="report-view">{content || "(no content yet)"}</pre>
+        <pre className="whitespace-pre-wrap rounded-lg border border-border bg-surface-muted/40 p-3 text-sm">
+          {content || "(no content yet)"}
+        </pre>
       )}
 
       {reviewable && (
-        <div className="report-review">
-          <label>Feedback (required for changes)</label>
-          <textarea rows={3} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
-          <div className="row">
-            <button className="primary" disabled={busy} onClick={() => onReview("APPROVE")}>
+        <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
+          <label className="text-sm font-medium">Feedback (required for changes)</label>
+          <textarea className={textarea} rows={3} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+          <div className={row}>
+            <button className={btn("primary")} disabled={busy} onClick={() => onReview("APPROVE")}>
               Approve
             </button>
-            <button
-              disabled={busy || !feedback.trim()}
-              onClick={() => onReview("REQUEST_CHANGES", feedback.trim())}
-            >
+            <button className={btn("default")} disabled={busy || !feedback.trim()} onClick={() => onReview("REQUEST_CHANGES", feedback.trim())}>
               Request changes
             </button>
           </div>
@@ -213,22 +193,14 @@ function ReportPanel({
       )}
 
       {overridable && (
-        <div className="report-review">
-          <label>Manager override — note required (recorded in the audit history)</label>
-          <textarea rows={3} value={overrideNote} onChange={(e) => setOverrideNote(e.target.value)} />
-          <div className="row">
-            <button
-              className="primary"
-              disabled={busy || !overrideNote.trim()}
-              onClick={() => onOverride("APPROVE", overrideNote.trim())}
-            >
+        <div className="flex flex-col gap-2 rounded-lg border border-warning/30 bg-warning-muted/40 p-3">
+          <label className="text-sm font-medium">Manager override — note required (recorded in the audit history)</label>
+          <textarea className={textarea} rows={3} value={overrideNote} onChange={(e) => setOverrideNote(e.target.value)} />
+          <div className={row}>
+            <button className={btn("primary")} disabled={busy || !overrideNote.trim()} onClick={() => onOverride("APPROVE", overrideNote.trim())}>
               Override: Approve
             </button>
-            <button
-              className="danger"
-              disabled={busy || !overrideNote.trim()}
-              onClick={() => onOverride("REQUEST_CHANGES", overrideNote.trim())}
-            >
+            <button className={btn("danger")} disabled={busy || !overrideNote.trim()} onClick={() => onOverride("REQUEST_CHANGES", overrideNote.trim())}>
               Override: Request changes
             </button>
           </div>

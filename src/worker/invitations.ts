@@ -130,6 +130,33 @@ export async function listPendingInvitationsForEmail(env: Env, email: string): P
   return results.map(toInvitation);
 }
 
+export interface EnrichedInvitation extends Invitation {
+  workspaceName: string;
+  invitedByName: string;
+}
+
+/** Same as listPendingInvitationsForEmail, with display-only fields joined in for the invitation UI. */
+export async function listPendingInvitationsForEmailEnriched(
+  env: Env,
+  email: string,
+): Promise<EnrichedInvitation[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT wi.*, w.name AS workspace_name, u.display_name AS invited_by_name
+       FROM workspace_invitations wi
+       JOIN workspaces w ON w.id = wi.workspace_id
+       LEFT JOIN users u ON u.id = wi.invited_by_user_id
+      WHERE wi.email = ? AND wi.status = 'PENDING' AND wi.expires_at > ?
+      ORDER BY wi.created_at DESC`,
+  )
+    .bind(email.trim().toLowerCase(), Date.now())
+    .all<InvitationRow & { workspace_name: string; invited_by_name: string | null }>();
+  return results.map((row) => ({
+    ...toInvitation(row),
+    workspaceName: row.workspace_name,
+    invitedByName: row.invited_by_name ?? "a workspace admin",
+  }));
+}
+
 export async function revokeInvitation(
   env: Env,
   input: { invitationId: string; workspaceId: string; actorUserId: string },

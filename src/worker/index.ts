@@ -17,7 +17,7 @@ import { IdentityConflictError, resolveProductionUser, type ProductionUser } fro
 import {
   acceptInvitation,
   createInvitation,
-  listPendingInvitationsForEmail,
+  listPendingInvitationsForEmailEnriched,
   listWorkspaceInvitations,
   revokeInvitation,
 } from "./invitations";
@@ -968,7 +968,7 @@ async function handleMe(env: Env, user: ProductionUser): Promise<Response> {
   )
     .bind(user.id)
     .all();
-  const pendingInvitations = await listPendingInvitationsForEmail(env, user.email);
+  const pendingInvitations = await listPendingInvitationsForEmailEnriched(env, user.email);
 
   return json({
     user: {

@@ -1,16 +1,11 @@
-import type { WorkspaceState } from "../../lib/useWorkspace";
-import type { WorkspaceActions } from "../../lib/useWorkspace";
+import type { WorkspaceActions, WorkspaceState } from "../../lib/useWorkspace";
 import { timeAgo } from "../../lib/format";
 import { Composer } from "../Composer";
+import { card, cn, meta, sectionTitle } from "../../ui/primitives";
+import { PriorityBadge, TaskStatusBadge, WarnBadge } from "../../ui/badges";
 
 /** Role-curated "home" for this workspace — same underlying data, different lens per spec. */
-export function OverviewTab({
-  state,
-  actions,
-}: {
-  state: WorkspaceState;
-  actions: WorkspaceActions;
-}) {
+export function OverviewTab({ state, actions }: { state: WorkspaceState; actions: WorkspaceActions }) {
   const role = state.you?.role ?? null;
   const userId = state.you?.userId ?? "";
   const latestDaily = state.updates.find((u) => u.type === "DAILY") ?? state.updates[0] ?? null;
@@ -31,32 +26,33 @@ export function OverviewTab({
   if (nextActions.length === 0) nextActions.push("Nothing outstanding — keep the updates coming.");
 
   return (
-    <div className="grid-2">
-      <section className="card span-2 next-actions">
-        <h3>{role === "manager" ? "Needs escalation" : role === "mentor" ? "Needs your attention" : "Next actions"}</h3>
-        <ul className="list">
+    <div className="grid gap-4 md:grid-cols-2">
+      <section className={cn(card, "md:col-span-2")}>
+        <h3 className={sectionTitle}>
+          {role === "manager" ? "Needs escalation" : role === "mentor" ? "Needs your attention" : "Next actions"}
+        </h3>
+        <ul className="mt-2 space-y-1 text-sm">
           {nextActions.map((a, i) => (
             <li key={i}>→ {a}</li>
           ))}
         </ul>
-        <p className="meta">
-          {activeTasks.length} active · {doneTasks.length} done ·{" "}
-          {openBlockers.length} open blocker(s) ·{" "}
+        <p className={cn(meta, "mt-2")}>
+          {activeTasks.length} active · {doneTasks.length} done · {openBlockers.length} open blocker(s) ·{" "}
           {weekly ? `weekly: ${weekly.status}` : "no weekly report"}
           {indexingDocs > 0 && ` · ${indexingDocs} document(s) indexing`}
         </p>
       </section>
 
       {unreadMentions.length > 0 && (
-        <section className="card span-2">
-          <h3>
-            Mentions <span className="count danger">{unreadMentions.length}</span>
+        <section className={cn(card, "md:col-span-2")}>
+          <h3 className={sectionTitle}>
+            Mentions <span className="text-danger">({unreadMentions.length})</span>
           </h3>
-          <ul className="list">
+          <ul className="mt-2 space-y-1.5 text-sm">
             {unreadMentions.map((m) => (
               <li key={m.id}>
-                <strong>{m.mentionedByName}</strong> mentioned you: “{m.snippet}”
-                <span className="meta"> · {timeAgo(m.createdAt)}</span>
+                <strong>{m.mentionedByName}</strong> mentioned you: "{m.snippet}"
+                <span className={meta}> · {timeAgo(m.createdAt)}</span>
               </li>
             ))}
           </ul>
@@ -65,145 +61,135 @@ export function OverviewTab({
 
       {role === "intern" && (
         <>
-          <section className="card">
-            <h3>Latest update</h3>
+          <section className={card}>
+            <h3 className={sectionTitle}>Latest update</h3>
             {latestDaily ? (
               <>
-                <p className="update-body">{latestDaily.content}</p>
-                <p className="meta">
-                  <span className={`badge type-${latestDaily.type}`}>{latestDaily.type}</span>{" "}
-                  {latestDaily.authorName} · {timeAgo(latestDaily.createdAt)}
+                <p className="mt-2 text-sm">{latestDaily.content}</p>
+                <p className={cn(meta, "mt-1")}>
+                  {latestDaily.type} · {latestDaily.authorName} · {timeAgo(latestDaily.createdAt)}
                 </p>
               </>
             ) : (
-              <p className="meta">No updates yet.</p>
+              <p className={cn(meta, "mt-2")}>No updates yet.</p>
             )}
-            <Composer
-              placeholder="What are you working on today?"
-              buttonLabel="Post daily update"
-              onSubmit={(text) => actions.postUpdate(text, "DAILY")}
-              disabled={role === null}
-              disabledHint="Join this workspace to post updates."
-            />
+            <div className="mt-3">
+              <Composer
+                placeholder="What are you working on today?"
+                buttonLabel="Post daily update"
+                onSubmit={(text) => actions.postUpdate(text, "DAILY")}
+                disabled={role === null}
+                disabledHint="Join this workspace to post updates."
+              />
+            </div>
           </section>
-          <section className="card">
-            <h3>
-              My urgent/high tasks <span className="count danger">{myUrgent.length}</span>
-            </h3>
-            <ul className="list">
+          <section className={card}>
+            <h3 className={sectionTitle}>My urgent/high tasks ({myUrgent.length})</h3>
+            <ul className="mt-2 space-y-1.5 text-sm">
               {myUrgent.map((t) => (
-                <li key={t.id}>
-                  <span className={`badge pri-${t.priority}`}>{t.priority}</span> {t.title}
+                <li key={t.id} className="flex items-center gap-2">
+                  <PriorityBadge priority={t.priority} /> {t.title}
                 </li>
               ))}
-              {myUrgent.length === 0 && <li className="meta">None right now.</li>}
+              {myUrgent.length === 0 && <li className={meta}>None right now.</li>}
             </ul>
-            {myOverdue.length > 0 && (
-              <p className="meta overdue-text">{myOverdue.length} overdue task(s).</p>
-            )}
+            {myOverdue.length > 0 && <p className="mt-2 text-sm text-danger">{myOverdue.length} overdue task(s).</p>}
           </section>
         </>
       )}
 
       {role === "mentor" && (
-        <section className="card">
-          <h3>Weekly reports waiting for review</h3>
-          <ul className="list">
+        <section className={card}>
+          <h3 className={sectionTitle}>Weekly reports waiting for review</h3>
+          <ul className="mt-2 space-y-1.5 text-sm">
             {state.weeklyReports
               .filter((r) => r.status === "SUBMITTED" || r.status === "RESUBMITTED")
               .map((r) => (
                 <li key={r.id}>
-                  {r.reportingPeriod} <span className="meta">· round {r.round}</span>
+                  {r.reportingPeriod} <span className={meta}>· round {r.round}</span>
                 </li>
               ))}
             {state.weeklyReports.filter((r) => r.status === "SUBMITTED" || r.status === "RESUBMITTED").length === 0 && (
-              <li className="meta">Nothing waiting.</li>
+              <li className={meta}>Nothing waiting.</li>
             )}
           </ul>
         </section>
       )}
 
       {role === "manager" && (
-        <section className="card">
-          <h3>Approved reports</h3>
-          <ul className="list">
+        <section className={card}>
+          <h3 className={sectionTitle}>Approved reports</h3>
+          <ul className="mt-2 space-y-1.5 text-sm">
             {state.weeklyReports
               .filter((r) => r.status === "APPROVED")
               .slice(0, 5)
               .map((r) => (
-                <li key={r.id}>
-                  {r.reportingPeriod} {r.overriddenBy && <span className="badge warn">override</span>}
+                <li key={r.id} className="flex items-center gap-2">
+                  {r.reportingPeriod} {r.overriddenBy && <WarnBadge>override</WarnBadge>}
                 </li>
               ))}
             {state.weeklyReports.filter((r) => r.status === "APPROVED").length === 0 && (
-              <li className="meta">None approved yet.</li>
+              <li className={meta}>None approved yet.</li>
             )}
           </ul>
         </section>
       )}
 
-      <section className="card">
-        <h3>
-          Blockers <span className="count danger">{openBlockers.length}</span>
-        </h3>
-        {openBlockers.length === 0 && <p className="meta">Nothing blocking right now.</p>}
-        <ul className="list">
+      <section className={card}>
+        <h3 className={sectionTitle}>Blockers ({openBlockers.length})</h3>
+        {openBlockers.length === 0 && <p className={cn(meta, "mt-2")}>Nothing blocking right now.</p>}
+        <ul className="mt-2 space-y-1.5 text-sm">
           {openBlockers.map((b) => (
-            <li key={b.id}>
-              <span className="dot danger" /> {b.description}
-              <span className="meta"> · {timeAgo(b.createdAt)}</span>
-              {role !== "intern" && !b.mentorResponded && b.status !== "RESOLVED" && (
-                <span className="badge warn"> no mentor response</span>
-              )}
+            <li key={b.id} className="flex flex-wrap items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-danger" /> {b.description}
+              <span className={meta}>· {timeAgo(b.createdAt)}</span>
+              {role !== "intern" && !b.mentorResponded && b.status !== "RESOLVED" && <WarnBadge>no mentor response</WarnBadge>}
             </li>
           ))}
         </ul>
       </section>
 
-      <section className="card">
-        <h3>
-          {role === "intern" ? "My tasks" : "Active tasks"} <span className="count">{activeTasks.length}</span>
+      <section className={card}>
+        <h3 className={sectionTitle}>
+          {role === "intern" ? "My tasks" : "Active tasks"} ({activeTasks.length})
         </h3>
-        <ul className="list">
+        <ul className="mt-2 space-y-1.5 text-sm">
           {(role === "intern" ? myTasks.filter((t) => t.status !== "DONE") : activeTasks).slice(0, 8).map((t) => (
-            <li key={t.id}>
-              <span className={`badge status-${t.status}`}>{t.status}</span> {t.title}
-              {t.dueDate && t.dueDate < Date.now() && t.status !== "DONE" && (
-                <span className="badge warn"> overdue</span>
-              )}
+            <li key={t.id} className="flex flex-wrap items-center gap-1.5">
+              <TaskStatusBadge status={t.status} /> {t.title}
+              {t.dueDate && t.dueDate < Date.now() && t.status !== "DONE" && <WarnBadge>overdue</WarnBadge>}
             </li>
           ))}
-          {activeTasks.length === 0 && <li className="meta">No active tasks.</li>}
+          {activeTasks.length === 0 && <li className={meta}>No active tasks.</li>}
         </ul>
       </section>
 
-      <section className="card">
-        <h3>{role === "intern" ? "Mentor feedback" : "Recent feedback"}</h3>
-        <ul className="list">
+      <section className={card}>
+        <h3 className={sectionTitle}>{role === "intern" ? "Mentor feedback" : "Recent feedback"}</h3>
+        <ul className="mt-2 space-y-1.5 text-sm">
           {recentFeedback.map((f) => (
             <li key={f.id}>
               <strong>{f.authorName}:</strong> {f.content}
-              <span className="meta"> · {timeAgo(f.createdAt)}</span>
+              <span className={meta}> · {timeAgo(f.createdAt)}</span>
             </li>
           ))}
-          {recentFeedback.length === 0 && <li className="meta">No feedback yet.</li>}
+          {recentFeedback.length === 0 && <li className={meta}>No feedback yet.</li>}
         </ul>
       </section>
 
-      <section className="card span-2">
-        <h3>Update history</h3>
-        <ul className="list feed">
+      <section className={cn(card, "md:col-span-2")}>
+        <h3 className={sectionTitle}>Update history</h3>
+        <ul className="mt-2 space-y-2 text-sm">
           {state.updates.slice(0, 10).map((u) => (
             <li key={u.id}>
               <div>
-                <span className={`badge type-${u.type}`}>{u.type}</span>{" "}
-                <strong>{u.authorName}</strong>
-                <span className="meta"> · {timeAgo(u.createdAt)}</span>
+                <span className="font-medium">{u.type}</span> <strong>{u.authorName}</strong>
+                <span className={meta}> · {timeAgo(u.createdAt)}</span>
               </div>
               <div>{u.content}</div>
             </li>
           ))}
-          {state.updates.length === 0 && <li className="meta">No updates yet.</li>}
+          {state.updates.length === 0 && <li className={meta}>No updates yet.</li>}
         </ul>
       </section>
     </div>

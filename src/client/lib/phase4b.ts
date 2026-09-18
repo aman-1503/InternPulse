@@ -1,46 +1,24 @@
 import type { Reminder, WeeklyReport, WeeklyReviewDecision } from "../../shared/protocol";
+import { identityQuery, withQuery, workspaceBase, workspaceJson, type WorkspaceMode } from "./workspaceApi";
 
-interface Identity {
-  userId: string;
-  displayName: string;
-}
-
-function qs(identity: Identity, devRole: string): string {
-  const p = new URLSearchParams({ userId: identity.userId, displayName: identity.displayName });
-  if (devRole) p.set("devRole", devRole);
-  return p.toString();
-}
-
-const base = (workspaceId: string) => `/api/demo/workspace/${encodeURIComponent(workspaceId)}`;
-
-async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
-  const body = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) throw new Error(body?.error || `request failed (${res.status})`);
-  return body as T;
+function url(workspaceId: string, mode: WorkspaceMode, path: string): string {
+  return withQuery(`${workspaceBase(workspaceId, mode)}${path}`, identityQuery(mode));
 }
 
 // -- reminders --------------------------------------------------------
 
 export function acknowledgeReminder(
   workspaceId: string,
-  identity: Identity,
-  devRole: string,
+  mode: WorkspaceMode,
   reminderId: string,
 ): Promise<{ reminder: Reminder }> {
-  return req(`${base(workspaceId)}/reminders/${reminderId}/ack?${qs(identity, devRole)}`, {
-    method: "POST",
-  });
+  return workspaceJson(url(workspaceId, mode, `/reminders/${reminderId}/ack`), { method: "POST" });
 }
 
 // -- weekly review ---------------------------------------------------
 
-export function startWeeklyReview(
-  workspaceId: string,
-  identity: Identity,
-  devRole: string,
-): Promise<{ report: WeeklyReport }> {
-  return req(`${base(workspaceId)}/weekly?${qs(identity, devRole)}`, {
+export function startWeeklyReview(workspaceId: string, mode: WorkspaceMode): Promise<{ report: WeeklyReport }> {
+  return workspaceJson(url(workspaceId, mode, "/weekly"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "{}",
@@ -49,38 +27,29 @@ export function startWeeklyReview(
 
 export function saveWeeklyDraft(
   workspaceId: string,
-  identity: Identity,
-  devRole: string,
+  mode: WorkspaceMode,
   reportId: string,
   draftContent: string,
 ): Promise<{ report: WeeklyReport }> {
-  return req(`${base(workspaceId)}/weekly/${reportId}?${qs(identity, devRole)}`, {
+  return workspaceJson(url(workspaceId, mode, `/weekly/${reportId}`), {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ draftContent }),
   });
 }
 
-export function submitWeeklyReport(
-  workspaceId: string,
-  identity: Identity,
-  devRole: string,
-  reportId: string,
-): Promise<{ ok: true }> {
-  return req(`${base(workspaceId)}/weekly/${reportId}/submit?${qs(identity, devRole)}`, {
-    method: "POST",
-  });
+export function submitWeeklyReport(workspaceId: string, mode: WorkspaceMode, reportId: string): Promise<{ ok: true }> {
+  return workspaceJson(url(workspaceId, mode, `/weekly/${reportId}/submit`), { method: "POST" });
 }
 
 export function reviewWeeklyReport(
   workspaceId: string,
-  identity: Identity,
-  devRole: string,
+  mode: WorkspaceMode,
   reportId: string,
   decision: WeeklyReviewDecision,
   feedback?: string,
 ): Promise<{ ok: true }> {
-  return req(`${base(workspaceId)}/weekly/${reportId}/review?${qs(identity, devRole)}`, {
+  return workspaceJson(url(workspaceId, mode, `/weekly/${reportId}/review`), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ decision, feedback }),
@@ -90,13 +59,12 @@ export function reviewWeeklyReport(
 /** Manager overrides a stuck mentor review. Recorded in the report's audit fields. */
 export function overrideWeeklyReport(
   workspaceId: string,
-  identity: Identity,
-  devRole: string,
+  mode: WorkspaceMode,
   reportId: string,
   decision: WeeklyReviewDecision,
   note: string,
 ): Promise<{ ok: true }> {
-  return req(`${base(workspaceId)}/weekly/${reportId}/override?${qs(identity, devRole)}`, {
+  return workspaceJson(url(workspaceId, mode, `/weekly/${reportId}/override`), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ decision, note }),

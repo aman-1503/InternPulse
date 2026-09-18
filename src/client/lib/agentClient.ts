@@ -1,39 +1,19 @@
-import type {
-  AgentAskResponse,
-  AgentErrorResponse,
-  AgentTurn,
-} from "../../shared/protocol";
+import type { AgentAskResponse, AgentErrorResponse, AgentTurn } from "../../shared/protocol";
+import { identityQuery, withQuery, workspaceBase, type WorkspaceMode } from "./workspaceApi";
 
-interface Identity {
-  userId: string;
-  displayName: string;
+function agentUrl(workspaceId: string, mode: WorkspaceMode): string {
+  return withQuery(`${workspaceBase(workspaceId, mode)}/agent`, identityQuery(mode));
 }
 
-function qs(identity: Identity, devRole: string): string {
-  const p = new URLSearchParams({
-    userId: identity.userId,
-    displayName: identity.displayName,
-  });
-  if (devRole) p.set("devRole", devRole);
-  return p.toString();
-}
-
-function agentUrl(workspaceId: string, identity: Identity, devRole: string): string {
-  return `/api/demo/workspace/${encodeURIComponent(workspaceId)}/agent?${qs(identity, devRole)}`;
-}
-
-export type AskResult =
-  | { ok: true; data: AgentAskResponse }
-  | { ok: false; error: AgentErrorResponse };
+export type AskResult = { ok: true; data: AgentAskResponse } | { ok: false; error: AgentErrorResponse };
 
 export async function askAgent(
   workspaceId: string,
-  identity: Identity,
-  devRole: string,
+  mode: WorkspaceMode,
   prompt: string,
   signal?: AbortSignal,
 ): Promise<AskResult> {
-  const res = await fetch(agentUrl(workspaceId, identity, devRole), {
+  const res = await fetch(agentUrl(workspaceId, mode), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ prompt }),
@@ -49,12 +29,11 @@ export async function askAgent(
 
 export async function getAgentHistory(
   workspaceId: string,
-  identity: Identity,
-  devRole: string,
+  mode: WorkspaceMode,
   signal?: AbortSignal,
 ): Promise<AgentTurn[]> {
   try {
-    const res = await fetch(agentUrl(workspaceId, identity, devRole), { signal });
+    const res = await fetch(agentUrl(workspaceId, mode), { signal });
     if (!res.ok) return [];
     const data = (await res.json()) as { turns?: AgentTurn[] };
     return data.turns ?? [];
