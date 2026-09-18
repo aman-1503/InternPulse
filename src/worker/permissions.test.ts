@@ -16,7 +16,7 @@ const EXPECTED: Record<MutationType, Role[]> = {
   "blocker.resolve": ["mentor", "manager"],
   "blocker.escalate": ["manager"],
   "update.create": ["intern"],
-  "feedback.create": ["intern", "mentor", "manager"],
+  "feedback.create": ["mentor", "manager"],
 };
 
 describe("permission matrix (locked-spec compliance)", () => {
@@ -44,5 +44,11 @@ describe("permission matrix (locked-spec compliance)", () => {
 
   it("final blocker resolution is confirmable only by mentor or manager, never intern", () => {
     expect(canMutate("intern", "blocker.resolve")).toBe(false);
+  });
+
+  it("an intern cannot give feedback (feedback flows mentor/manager -> intern only)", () => {
+    expect(canMutate("intern", "feedback.create")).toBe(false);
+    expect(canMutate("mentor", "feedback.create")).toBe(true);
+    expect(canMutate("manager", "feedback.create")).toBe(true);
   });
 });

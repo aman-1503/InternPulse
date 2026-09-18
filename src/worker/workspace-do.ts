@@ -112,7 +112,10 @@ export class WorkspaceDO extends DurableObject<Env> {
       const members = results.map((r) => ({ ...r, handle: deriveHandle(r.displayName) }));
       this.membersCache = { at: Date.now(), workspaceId, members };
       return members;
-    } catch {
+    } catch (err) {
+      // Never cached — a transient D1 error should be retried on the very
+      // next call, not frozen as "no members" for MEMBERS_TTL_MS.
+      console.error("loadMembers failed (non-fatal, roster/mentions degraded)", workspaceId, err);
       return [];
     }
   }

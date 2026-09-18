@@ -6,10 +6,9 @@ import { useMentionSuggestions } from "../../ui/useMentionSuggestions";
 import { MentionSuggestions } from "../../ui/MentionSuggestions";
 
 export function FeedbackTab({ state, actions }: { state: WorkspaceState; actions: WorkspaceActions }) {
-  // Backend permits feedback.create from any role with membership (intern/mentor/manager
-  // — see permissions.ts); the UI previously restricted this to mentor-only, which was
-  // stricter than what the server actually enforces.
-  const canGive = state.you?.role !== null && state.you?.role !== undefined;
+  // Feedback flows mentor/manager -> intern; an intern giving feedback on their own
+  // work isn't a supported flow. Enforced server-side too (permissions.ts).
+  const canGive = state.you?.role === "mentor" || state.you?.role === "manager";
   const [content, setContent] = useState("");
   const [taskId, setTaskId] = useState("");
   const contentRef = useRef<HTMLTextAreaElement | null>(null);
@@ -62,7 +61,7 @@ export function FeedbackTab({ state, actions }: { state: WorkspaceState; actions
             </div>
           </div>
         ) : (
-          <p className={cn(meta, "mt-2")}>Join this workspace to add feedback.</p>
+          <p className={cn(meta, "mt-2")}>Only a mentor or manager can give feedback.</p>
         )}
       </section>
 

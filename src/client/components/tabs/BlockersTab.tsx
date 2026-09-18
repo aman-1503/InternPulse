@@ -134,6 +134,8 @@ export function BlockersTab({ state, actions }: { state: WorkspaceState; actions
 
   const [description, setDescription] = useState("");
   const [taskId, setTaskId] = useState("");
+  const descriptionRef = useRef<HTMLTextAreaElement | null>(null);
+  const descriptionMention = useMentionSuggestions(description, setDescription, state.members, descriptionRef);
 
   const open = state.blockers.filter((b) => b.status !== "RESOLVED");
   const resolved = state.blockers.filter((b) => b.status === "RESOLVED");
@@ -145,11 +147,20 @@ export function BlockersTab({ state, actions }: { state: WorkspaceState; actions
         {canRaise ? (
           <div className="mt-2 flex flex-col gap-2">
             <textarea
+              ref={descriptionRef}
               className={textarea}
               rows={2}
-              placeholder="Describe what's blocking you (required)"
+              placeholder="Describe what's blocking you (required — type @ to mention someone)"
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={descriptionMention.onFieldChange}
+              onKeyUp={descriptionMention.onFieldKeyUp}
+            />
+            <MentionSuggestions
+              open={descriptionMention.open}
+              triggerRef={descriptionRef}
+              suggestions={descriptionMention.suggestions}
+              onPick={descriptionMention.insert}
+              onClose={descriptionMention.close}
             />
             <div className={row}>
               <select className={select} value={taskId} onChange={(e) => setTaskId(e.target.value)}>

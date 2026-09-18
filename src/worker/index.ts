@@ -1128,7 +1128,14 @@ async function routeApi(request: Request, env: Env, url: URL, pathname: string, 
     if (match[2] === "summary") {
       const isDemo = await workspaceIsDemo(env, workspaceId);
       if (isDemo === null || isDemo !== demoMode) return json({ error: "not found" }, 404);
-      return stub.fetch(request);
+      // The DO parses its own workspace id from the request path (workspaceIdFrom);
+      // it only recognizes the canonical /api/workspace/:id/... shape, so a demo
+      // request's raw /api/demo/workspace/:id/... path must be rewritten to that
+      // canonical form before forwarding — otherwise the DO silently resolves an
+      // empty workspace id (see the identical fix below for ws/snapshot).
+      const summaryUrl = new URL(request.url);
+      summaryUrl.pathname = pathname;
+      return stub.fetch(new Request(summaryUrl.toString(), request));
     }
 
     const callerOrResponse = await resolveCaller(request, env, url, demoMode);
@@ -1146,8 +1153,12 @@ async function routeApi(request: Request, env: Env, url: URL, pathname: string, 
     }
 
     // Attach a Worker-authoritative identity the DO can trust; the DO never
-    // re-derives identity or accepts a raw client-supplied fallback.
+    // re-derives identity or accepts a raw client-supplied fallback. Also
+    // rewrite the path to the canonical (non-/demo-prefixed) form the DO's
+    // own workspaceIdFrom() parser expects — see the comment on the summary
+    // route above for why this matters.
     const doUrl = new URL(request.url);
+    doUrl.pathname = pathname;
     doUrl.searchParams.set("_uid", callerOrResponse.userId);
     doUrl.searchParams.set("_name", callerOrResponse.displayName);
     doUrl.searchParams.set("_role", role);

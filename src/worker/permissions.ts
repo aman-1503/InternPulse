@@ -16,7 +16,9 @@
  *   request blocker resolution y      -       -            -
  *   resolve blocker (+note)    -      y       y            -
  *   escalate blocker           -      -       y            -
- *   feedback / task comment    y      y       y            -
+ *   give feedback               -      y       y            -
+ *     (feedback flows mentor/manager -> intern; an intern giving
+ *      feedback on their own work isn't a supported flow)
  *
  * "no membership" = an authenticated-but-unassigned demo identity: read-only.
  * Later phases can replace the role source without touching callers.
@@ -37,8 +39,9 @@ export function canMutate(role: Role | null, action: MutationType): boolean {
     case "task.priority":
       return role === "mentor" || role === "manager";
     case "blocker.comment":
-    case "feedback.create":
       return role === "intern" || role === "mentor" || role === "manager";
+    case "feedback.create":
+      return role === "mentor" || role === "manager";
     case "blocker.resolve":
       return role === "mentor" || role === "manager";
     case "blocker.escalate":

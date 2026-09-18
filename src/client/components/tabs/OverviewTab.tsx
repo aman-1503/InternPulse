@@ -80,6 +80,7 @@ export function OverviewTab({ state, actions }: { state: WorkspaceState; actions
                 onSubmit={(text) => actions.postUpdate(text, "DAILY")}
                 disabled={role === null}
                 disabledHint="Join this workspace to post updates."
+                members={state.members}
               />
             </div>
           </section>

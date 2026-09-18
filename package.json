@@ -21,7 +21,8 @@
     "load-test": "node scripts/load-test.mjs",
     "test:prod-smoke": "node scripts/prod-smoke.mjs",
     "test:qa-adversarial": "node scripts/qa-adversarial.mjs",
-    "test:qa-production-auth": "node scripts/qa-production-auth.mjs"
+    "test:qa-production-auth": "node scripts/qa-production-auth.mjs",
+    "test:qa-workflow-live": "node scripts/qa-workflow-live.mjs"
   },
   "dependencies": {
     "agents": "^0.22.0",
