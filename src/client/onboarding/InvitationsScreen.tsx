@@ -3,7 +3,7 @@ import { useAuth } from "../auth/AuthProvider";
 import type { PendingInvitation } from "../auth/types";
 import { acceptInvitation } from "../lib/api";
 import { navigate, workspaceHash } from "../router";
-import { timeAgo } from "../lib/format";
+import { timeUntil } from "../lib/format";
 import { btn, card, cn, meta } from "../ui/primitives";
 import { RoleBadge } from "../ui/badges";
 import { Banner } from "../ui/states";
@@ -42,7 +42,7 @@ export function InvitationsScreen({ invitations }: { invitations: PendingInvitat
               <RoleBadge role={inv.role} />
             </div>
             <p className={meta}>
-              Invited by {inv.invitedByName} · expires {timeAgo(inv.expiresAt)}
+              Invited by {inv.invitedByName} · expires {timeUntil(inv.expiresAt)}
             </p>
             {errors[inv.id] && <Banner tone="danger">{errors[inv.id]}</Banner>}
             <button className={cn(btn("primary"), "self-start")} disabled={busyId === inv.id} onClick={() => accept(inv)}>

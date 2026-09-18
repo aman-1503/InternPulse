@@ -7,7 +7,7 @@ import {
   revokeWorkspaceInvitation,
   type WorkspaceInvitation,
 } from "../lib/api";
-import { timeAgo } from "../lib/format";
+import { timeUntil } from "../lib/format";
 import { btn, card, cn, input, meta, row, sectionTitle, select, stack } from "../ui/primitives";
 import { RoleBadge } from "../ui/badges";
 import { Banner, ConfirmDialog } from "../ui/states";
@@ -137,7 +137,7 @@ export function WorkspaceSettings({
                     {inv.email} <RoleBadge role={inv.role as Role} />
                   </span>
                   <span className="flex items-center gap-2">
-                    <span className={meta}>expires {timeAgo(inv.expiresAt)}</span>
+                    <span className={meta}>expires {timeUntil(inv.expiresAt)}</span>
                     <button className={btn("ghost")} onClick={() => setRevokeTarget(inv)}>
                       Revoke
                     </button>
