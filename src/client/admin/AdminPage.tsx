@@ -19,8 +19,9 @@ import {
   type WorkspaceInvitation,
 } from "../lib/api";
 import { timeAgo } from "../lib/format";
-import { badge, badgeTones, btn, card, cn, input, meta, sectionTitle, select } from "../ui/primitives";
+import { badge, badgeTones, btn, card, cardInteractive, cn, input, meta, pageTitle, sectionTitle, select } from "../ui/primitives";
 import { RoleBadge } from "../ui/badges";
+import { ShieldIcon } from "../ui/icons";
 import { Banner, ConfirmDialog, LoadingScreen } from "../ui/states";
 
 type AdminTab = "users" | "workspaces" | "invitations" | "audit" | "health";
@@ -30,14 +31,19 @@ export function AdminPage() {
 
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-4 p-4 md:p-6">
-      <h1 className="text-xl font-semibold text-text">Admin</h1>
-      <nav className="flex gap-1 border-b border-border">
+      <div className="flex items-center gap-2">
+        <ShieldIcon className="h-5 w-5 text-role-admin" />
+        <h1 className={pageTitle}>Admin</h1>
+      </div>
+      <nav className="tabs-scroll flex gap-1 border-b border-border" role="tablist">
         {(["users", "workspaces", "invitations", "audit", "health"] as const).map((t) => (
           <button
             key={t}
+            role="tab"
+            aria-selected={tab === t}
             className={cn(
-              "border-b-2 px-3 py-2 text-sm font-medium capitalize",
-              tab === t ? "border-accent text-accent" : "border-transparent text-muted hover:text-text",
+              "shrink-0 border-b-2 px-3 py-2 text-sm font-medium capitalize transition-colors",
+              tab === t ? "border-accent text-accent" : "border-transparent text-muted hover:border-border hover:text-text",
             )}
             onClick={() => setTab(t)}
           >
@@ -110,7 +116,7 @@ function UsersPanel() {
           </thead>
           <tbody>
             {items.map((u) => (
-              <tr key={u.id} className="border-t border-border">
+              <tr key={u.id} className="border-t border-border transition-colors hover:bg-surface-muted/50">
                 <td className="px-3 py-2">{u.displayName}</td>
                 <td className="px-3 py-2">{u.email}</td>
                 <td className="px-3 py-2">
@@ -161,7 +167,7 @@ function WorkspacesPanel() {
       <ul className="flex flex-col gap-2">
         {items.map((w) => (
           <li key={w.id}>
-            <button className={cn(card, "flex w-full items-center justify-between gap-2 text-left hover:border-accent")} onClick={() => setSelected(w)}>
+            <button className={cn(cardInteractive, "flex w-full items-center justify-between gap-2 text-left")} onClick={() => setSelected(w)}>
               <span>
                 {w.name} {w.isDemo === 1 && <span className={meta}>(demo)</span>}
               </span>

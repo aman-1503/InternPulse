@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useAuth } from "../auth/AuthProvider";
 import type { MeUser } from "../auth/types";
 import { ApiError, updateDisplayName } from "../lib/api";
-import { btn, card, cn, input, meta, row, sectionTitle } from "../ui/primitives";
+import { btn, card, cn, input, meta, pageTitle, row, sectionTitle } from "../ui/primitives";
 import { AdminBadge } from "../ui/badges";
 import { Banner } from "../ui/states";
 
@@ -39,7 +39,7 @@ export function SettingsPage({ user }: { user: MeUser }) {
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-4 p-4 md:p-6">
-      <h1 className="text-xl font-semibold text-text">Profile &amp; settings</h1>
+      <h1 className={pageTitle}>Profile &amp; settings</h1>
 
       <section className={cn(card, "flex flex-col gap-3")}>
         <h2 className={sectionTitle}>Profile</h2>

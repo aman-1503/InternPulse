@@ -3,8 +3,9 @@ import { AGENT_QUICK_PROMPTS, AGENT_PROMPT_MAX, type AgentGroundedOn, type Agent
 import { timeAgo } from "../../lib/format";
 import { askAgent, getAgentHistory } from "../../lib/agentClient";
 import type { WorkspaceMode } from "../../lib/workspaceApi";
-import { btn, card, cn, meta, textarea } from "../../ui/primitives";
+import { btn, card, cn, meta, metaXs, textarea } from "../../ui/primitives";
 import { Banner } from "../../ui/states";
+import { SparkleIcon } from "../../ui/icons";
 
 /**
  * The Progress Agent panel. Text in -> grounded answer out. All reasoning
@@ -83,34 +84,57 @@ export function AgentTab({
   );
 
   return (
-    <section className={card}>
-      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-1">
-        <h3 className="text-sm font-semibold text-text">Progress Agent</h3>
-        <span className={meta}>Grounded in this workspace's current state. Read-only — it never changes anything.</span>
+    <section className={cn(card, "flex flex-col")}>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
+        <div className="flex items-center gap-2">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-muted text-accent">
+            <SparkleIcon className="h-4 w-4" />
+          </span>
+          <div>
+            <h3 className="text-sm font-semibold text-text">Progress Agent</h3>
+            <p className={metaXs}>Grounded in this workspace's current state · read-only</p>
+          </div>
+        </div>
       </div>
 
       {role === null && <Banner tone="neutral">You have no role in this workspace, so the agent is unavailable.</Banner>}
 
       <div className="mb-3 flex flex-wrap gap-1.5">
         {AGENT_QUICK_PROMPTS.map((q) => (
-          <button key={q} className={btn("default")} disabled={loading || role === null} onClick={() => submit(q)}>
+          <button key={q} className={cn(btn("default"), "rounded-full")} disabled={loading || role === null} onClick={() => submit(q)}>
             {q}
           </button>
         ))}
       </div>
 
-      <div ref={scrollRef} className="mb-3 max-h-96 overflow-y-auto rounded-lg border border-border bg-surface-muted/40 p-3">
-        {turns.length === 0 && !loading && <p className={meta}>Ask a question, or use a quick prompt above.</p>}
+      <div ref={scrollRef} className="mb-3 max-h-96 min-h-48 overflow-y-auto rounded-lg border border-border bg-surface-muted/40 p-3">
+        {turns.length === 0 && !loading && (
+          <div className="flex h-full flex-col items-center justify-center gap-1 py-6 text-center">
+            <SparkleIcon className="h-5 w-5 text-muted" />
+            <p className={cn(meta, "font-medium text-text")}>Ask the Progress Agent anything about this workspace</p>
+            <p className={metaXs}>It can summarize progress, surface blockers, or help you prep for a 1:1 — grounded in real workspace data.</p>
+          </div>
+        )}
         <div className="flex flex-col gap-3">
           {turns.map((turn) => (
-            <div key={turn.id}>
-              <div className="text-sm">
-                <span className="font-medium text-accent">{turn.role ?? "you"}</span> {turn.prompt}
+            <div key={turn.id} className="flex flex-col gap-1.5">
+              <div className="flex justify-end">
+                <div className="max-w-[85%] rounded-2xl rounded-tr-sm bg-accent px-3 py-2 text-sm text-white shadow-sm">{turn.prompt}</div>
               </div>
               {turn.answer ? (
-                <div className="mt-1 rounded-lg bg-surface p-2 text-sm shadow-sm">{turn.answer}</div>
+                <div className="flex justify-start">
+                  <div className="max-w-[85%] rounded-2xl rounded-tl-sm border border-border bg-surface px-3 py-2 text-sm shadow-sm">
+                    {turn.answer}
+                  </div>
+                </div>
               ) : loading ? (
-                <div className={cn(meta, "mt-1 italic")}>thinking…</div>
+                <div className="flex justify-start">
+                  <div className="flex items-center gap-1 rounded-2xl rounded-tl-sm border border-border bg-surface px-3 py-2.5">
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:-0.3s]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:-0.15s]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted" />
+                  </div>
+                </div>
               ) : null}
             </div>
           ))}
@@ -124,8 +148,8 @@ export function AgentTab({
       )}
 
       {groundedMeta && (
-        <p className={cn(meta, "mb-3")}>
-          grounded on {groundedMeta.grounded.activeTasks} active / {groundedMeta.grounded.doneTasks} done tasks · {groundedMeta.grounded.openBlockers} open
+        <p className={cn(metaXs, "mb-3 border-t border-border pt-2")}>
+          Grounded on {groundedMeta.grounded.activeTasks} active / {groundedMeta.grounded.doneTasks} done tasks · {groundedMeta.grounded.openBlockers} open
           blockers · {groundedMeta.grounded.updates} updates · {groundedMeta.grounded.feedback} feedback · {groundedMeta.grounded.retrievedHistory} historical ·{" "}
           {groundedMeta.grounded.retrievedDocuments} document {groundedMeta.grounded.retrievedDocuments === 1 ? "chunk" : "chunks"} · state{" "}
           {timeAgo(groundedMeta.grounded.contextGeneratedAt)} · model <code>{groundedMeta.model}</code>

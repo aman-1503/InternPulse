@@ -1,8 +1,8 @@
 import type { MeUser, Membership } from "../auth/types";
 import { usePortfolio } from "../lib/usePortfolio";
 import { workspaceHash } from "../router";
-import { card, cn, meta, sectionTitle } from "../ui/primitives";
-import { LoadingScreen, EmptyState } from "../ui/states";
+import { card, cardInteractive, cn, meta, pageTitle, sectionTitle } from "../ui/primitives";
+import { LoadingScreen, EmptyState, StatTile } from "../ui/states";
 import { AttentionList } from "./AttentionList";
 import { byReasons, flattenAttention } from "./attentionGroups";
 
@@ -29,7 +29,14 @@ export function MentorHome({ user, memberships }: { user: MeUser; memberships: M
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-4 p-4 md:p-6">
-      <h1 className="text-xl font-semibold text-text">Which interns need your attention?</h1>
+      <h1 className={pageTitle}>Which interns need your attention?</h1>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatTile label="Waiting on you" value={waitingOnYou.length} tone={waitingOnYou.length > 0 ? "danger" : "neutral"} />
+        <StatTile label="Reports to review" value={reportsForReview.length} tone={reportsForReview.length > 0 ? "accent" : "neutral"} />
+        <StatTile label="Urgent guidance" value={urgentGuidance.length} tone={urgentGuidance.length > 0 ? "warning" : "neutral"} />
+        <StatTile label="Gone quiet" value={staleInterns.length} tone={staleInterns.length > 0 ? "warning" : "neutral"} />
+      </div>
 
       <div className="grid gap-4 md:grid-cols-2">
         <AttentionList
@@ -51,10 +58,7 @@ export function MentorHome({ user, memberships }: { user: MeUser; memberships: M
             const longRunning = openBlockers.filter((b) => now - b.createdAt > LONG_RUNNING_MS);
             return (
               <li key={membership.workspaceId}>
-                <a
-                  href={workspaceHash(membership.workspaceId)}
-                  className="block rounded-lg border border-border p-3 hover:border-accent hover:bg-accent-muted/40"
-                >
+                <a href={workspaceHash(membership.workspaceId)} className={cn(cardInteractive, "block")}>
                   <div className="font-medium text-text">{membership.workspaceName}</div>
                   {error ? (
                     <p className="text-sm text-danger">{error}</p>

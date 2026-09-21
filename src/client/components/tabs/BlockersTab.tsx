@@ -2,8 +2,9 @@ import { useRef, useState } from "react";
 import type { Blocker } from "../../../shared/protocol";
 import type { WorkspaceActions, WorkspaceState } from "../../lib/useWorkspace";
 import { timeAgo } from "../../lib/format";
-import { btn, card, cn, input, meta, row, select, sectionTitle, textarea } from "../../ui/primitives";
+import { badge, badgeTones, btn, card, cardAccent, cn, input, meta, metaXs, row, select, sectionTitle, textarea } from "../../ui/primitives";
 import { BlockerStatusBadge } from "../../ui/badges";
+import { AlertIcon } from "../../ui/icons";
 import { useMentionSuggestions } from "../../ui/useMentionSuggestions";
 import { MentionSuggestions } from "../../ui/MentionSuggestions";
 
@@ -17,6 +18,10 @@ function BlockerCard({ b, state, actions }: { b: Blocker; state: WorkspaceState;
 
   const taskTitle = b.taskId ? (state.tasks.find((t) => t.id === b.taskId)?.title ?? "(deleted task)") : null;
   const comments = state.blockerComments.filter((c) => c.blockerId === b.id).sort((a, c) => a.createdAt - c.createdAt);
+  const escalation = state.activity
+    .filter((a) => a.type === "blocker.escalated" && a.entityId === b.id)
+    .sort((a, c) => c.createdAt - a.createdAt)[0];
+  const escalated = !!escalation && b.status !== "RESOLVED";
 
   const canComment = role === "intern" || role === "mentor" || role === "manager";
   const canRequestResolution = role === "intern" && b.status === "OPEN";
@@ -30,18 +35,29 @@ function BlockerCard({ b, state, actions }: { b: Blocker; state: WorkspaceState;
   };
 
   return (
-    <li className={cn(card, b.status === "RESOLVED" && "opacity-70")}>
+    <li className={cn(b.status === "RESOLVED" ? cn(card, "opacity-70") : escalated ? cardAccent("danger") : card)}>
       <div className="flex flex-wrap items-center gap-2">
         <span className={cn("h-1.5 w-1.5 rounded-full", b.status === "RESOLVED" ? "bg-success" : "bg-danger")} />
         <strong className="text-sm">{b.description}</strong>
         <BlockerStatusBadge status={b.status} />
+        {escalated && (
+          <span className={cn(badge(badgeTones.critical), "gap-1")}>
+            <AlertIcon className="h-3 w-3" /> Escalated
+          </span>
+        )}
       </div>
-      <p className={cn(meta, "mt-1")}>
+      <p className={cn(metaXs, "mt-1")}>
         raised by {b.createdByName || b.createdBy} · {timeAgo(b.createdAt)}
         {taskTitle && <> · task: {taskTitle}</>}
         {b.status !== "RESOLVED" && <> · mentor {b.mentorResponded ? "responded" : "has not responded"}</>}
         {b.status === "RESOLUTION_REQUESTED" && <> · awaiting mentor/manager confirmation</>}
       </p>
+      {escalated && (
+        <p className="mt-1 text-sm text-danger">
+          Escalated by {escalation!.actorName} · {timeAgo(escalation!.createdAt)}
+          {typeof escalation!.metadata?.note === "string" && escalation!.metadata.note ? ` — "${escalation!.metadata.note}"` : ""}
+        </p>
+      )}
 
       {comments.length > 0 && (
         <ul className="mt-2 space-y-1 border-l-2 border-border pl-3 text-sm">

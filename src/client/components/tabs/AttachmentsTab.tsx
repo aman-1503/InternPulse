@@ -4,8 +4,9 @@ import type { WorkspaceState } from "../../lib/useWorkspace";
 import { timeAgo } from "../../lib/format";
 import { attachmentDownloadUrl, deleteAttachment, uploadAttachment } from "../../lib/attachments";
 import type { WorkspaceMode } from "../../lib/workspaceApi";
-import { badge, badgeTones, card, cn, meta, sectionTitle } from "../../ui/primitives";
-import { Banner } from "../../ui/states";
+import { badge, badgeTones, card, cn, meta, metaXs, sectionTitle } from "../../ui/primitives";
+import { Banner, EmptyState } from "../../ui/states";
+import { FileIcon, UploadIcon } from "../../ui/icons";
 
 const INDEX_LABEL: Record<Attachment["indexStatus"], string> = {
   pending: "indexing…",
@@ -45,6 +46,7 @@ export function AttachmentsTab({
   const [err, setErr] = useState<string | null>(null);
 
   const files = [...state.attachments].sort((a, b) => b.createdAt - a.createdAt);
+  const [dragOver, setDragOver] = useState(false);
 
   const onUpload = async (file: File) => {
     setBusy(true);
@@ -70,19 +72,38 @@ export function AttachmentsTab({
       </div>
 
       {canWrite ? (
-        <div className="mb-3 flex items-center gap-2">
+        <label
+          className={cn(
+            "mb-4 flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed p-6 text-center transition-colors",
+            dragOver ? "border-accent bg-accent-muted/40" : "border-border hover:border-accent/50 hover:bg-surface-muted",
+            busy && "pointer-events-none opacity-60",
+          )}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            const f = e.dataTransfer.files?.[0];
+            if (f) onUpload(f);
+          }}
+        >
+          <UploadIcon className="h-5 w-5 text-muted" />
+          <span className="text-sm font-medium text-text">{busy ? "Uploading…" : "Drop a file here, or click to browse"}</span>
+          <span className={metaXs}>Shared with everyone in this workspace</span>
           <input
             ref={fileRef}
             type="file"
             disabled={busy}
-            className="text-sm"
+            className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (f) onUpload(f);
             }}
           />
-          {busy && <span className={meta}>uploading…</span>}
-        </div>
+        </label>
       ) : (
         <p className={cn(meta, "mb-3")}>Your role can view and download files but not upload.</p>
       )}
@@ -93,21 +114,38 @@ export function AttachmentsTab({
         </div>
       )}
 
-      <ul className="flex flex-col gap-2">
-        {files.map((f) => (
-          <li key={f.id} className="rounded-lg border border-border p-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <a href={attachmentDownloadUrl(workspaceId, mode, f.id)} target="_blank" rel="noreferrer" className="text-accent hover:underline">
-                {f.filename}
-              </a>
-              <span className={badge(badgeTones[INDEX_TONE[f.indexStatus]])}>{INDEX_LABEL[f.indexStatus]}</span>
-              {f.indexStatus === "indexed" && f.chunkCount > 0 && <span className={meta}>· {f.chunkCount} chunks</span>}
-            </div>
-            <div className={cn(meta, "mt-1 flex items-center gap-2")}>
-              {humanSize(f.size)} · {f.contentType || "unknown type"} · {f.uploaderName} · {timeAgo(f.createdAt)}
+      {files.length === 0 ? (
+        <EmptyState title="No files yet" description="Uploaded files will show up here for everyone in the workspace." />
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {files.map((f) => (
+            <li key={f.id} className="flex items-start gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-surface-muted/50">
+              <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-surface-muted text-muted">
+                <FileIcon />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <a
+                    href={attachmentDownloadUrl(workspaceId, mode, f.id)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="truncate font-medium text-accent hover:underline"
+                  >
+                    {f.filename}
+                  </a>
+                  <span className={badge(badgeTones[INDEX_TONE[f.indexStatus]])}>{INDEX_LABEL[f.indexStatus]}</span>
+                  {f.indexStatus === "indexed" && f.chunkCount > 0 && <span className={metaXs}>· {f.chunkCount} chunks</span>}
+                </div>
+                <div className={cn(metaXs, "mt-1 flex flex-wrap items-center gap-x-2")}>
+                  <span>{humanSize(f.size)}</span>
+                  <span>· {f.contentType || "unknown type"}</span>
+                  <span>· {f.uploaderName}</span>
+                  <span>· {timeAgo(f.createdAt)}</span>
+                </div>
+              </div>
               {canWrite && (
                 <button
-                  className="text-danger hover:underline"
+                  className="shrink-0 rounded-md px-2 py-1 text-xs text-danger hover:bg-danger-muted"
                   onClick={async () => {
                     if (!confirm(`Delete "${f.filename}"?`)) return;
                     try {
@@ -117,14 +155,13 @@ export function AttachmentsTab({
                     }
                   }}
                 >
-                  delete
+                  Delete
                 </button>
               )}
-            </div>
-          </li>
-        ))}
-        {files.length === 0 && <li className={meta}>No files uploaded yet.</li>}
-      </ul>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

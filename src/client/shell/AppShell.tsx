@@ -30,7 +30,7 @@ export function AppShell({
       {mobileOpen && (
         <div className="fixed inset-0 z-40 md:hidden">
           <div className="absolute inset-0 bg-black/40" onClick={() => setMobileOpen(false)} />
-          <div className="absolute inset-y-0 left-0">
+          <div className="absolute inset-y-0 left-0 shadow-xl">
             <Sidebar user={user} memberships={memberships} activeHash={activeHash} onNavigate={() => setMobileOpen(false)} />
           </div>
         </div>

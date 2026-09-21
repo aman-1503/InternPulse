@@ -24,6 +24,31 @@ export function LoadingScreen({ label = "Loading…" }: { label?: string }) {
   );
 }
 
+/** Small metric tile for a dashboard summary row — e.g. "3 urgent", "12 active". */
+export function StatTile({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: number | string;
+  tone?: "neutral" | "danger" | "warning" | "success" | "accent";
+}) {
+  const valueTone = {
+    neutral: "text-text",
+    danger: "text-danger",
+    warning: "text-warning",
+    success: "text-success",
+    accent: "text-accent",
+  }[tone];
+  return (
+    <div className={cn(card, "flex flex-col gap-0.5 px-4 py-3")}>
+      <span className={cn("text-2xl font-semibold tabular-nums", valueTone)}>{value}</span>
+      <span className={meta}>{label}</span>
+    </div>
+  );
+}
+
 export function EmptyState({
   title,
   description,

@@ -37,13 +37,14 @@ export function ProfileMenu({ user }: { user: MeUser }) {
       </button>
 
       {open && (
-        <div role="menu" className="absolute right-0 z-30 mt-2 w-64 rounded-lg border border-border bg-surface p-3 shadow-lg">
-          <p className="font-medium text-text">{user.displayName}</p>
-          <p className={meta}>{user.email}</p>
+        <div role="menu" className="absolute right-0 z-30 mt-2 w-64 rounded-lg border border-border bg-surface p-3 shadow-lg ring-1 ring-black/5">
+          <p className="truncate font-medium text-text">{user.displayName}</p>
+          <p className={cn(meta, "truncate")}>{user.email}</p>
           <p className={cn(meta, "mt-1 flex items-center gap-1")}>
             {user.accountStatus} {user.isAdmin && <AdminBadge />}
           </p>
-          <div className="mt-3 flex flex-col gap-1">
+          <div className="my-2 border-t border-border" />
+          <div className="flex flex-col gap-1">
             <button
               role="menuitem"
               className={cn(btn("default"), "justify-start")}

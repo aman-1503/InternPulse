@@ -30,9 +30,12 @@ export function InvitationsScreen({ invitations }: { invitations: PendingInvitat
 
   return (
     <div className="mx-auto flex min-h-screen max-w-lg flex-col justify-center gap-4 p-4">
-      <div>
-        <h1 className="text-lg font-semibold text-text">You've been invited</h1>
-        <p className={meta}>Accept an invitation to join its workspace.</p>
+      <div className="mb-2 flex flex-col items-center gap-3 text-center">
+        <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent text-base font-bold text-white shadow-sm">IP</span>
+        <div>
+          <h1 className="text-lg font-semibold text-text">You've been invited</h1>
+          <p className={meta}>Accept an invitation below to join its workspace.</p>
+        </div>
       </div>
       <ul className="flex flex-col gap-3">
         {invitations.map((inv) => (

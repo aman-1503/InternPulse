@@ -1,7 +1,7 @@
 import type { Membership } from "../auth/types";
 import { usePortfolio } from "../lib/usePortfolio";
 import { workspaceHash } from "../router";
-import { card, cn, meta, sectionTitle } from "../ui/primitives";
+import { cardInteractive, cn, meta, pageTitle, sectionTitle } from "../ui/primitives";
 import { WeeklyStatusBadge } from "../ui/badges";
 import { EmptyState, LoadingScreen } from "../ui/states";
 
@@ -21,14 +21,14 @@ export function WeeklyReviewsPage({ memberships }: { memberships: Membership[] }
 
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">
-      <h1 className="mb-4 text-xl font-semibold text-text">Weekly reviews</h1>
+      <h1 className={cn("mb-4", pageTitle)}>Weekly reviews</h1>
       {rows.length === 0 ? (
         <EmptyState title="No weekly reports yet" description="They'll show up here once someone starts one." />
       ) : (
         <ul className="flex flex-col gap-2">
           {rows.map(({ report, workspaceId, workspaceName }) => (
             <li key={report.id}>
-              <a href={workspaceHash(workspaceId, "weekly")} className={cn(card, "flex items-center justify-between gap-2 hover:border-accent")}>
+              <a href={workspaceHash(workspaceId, "weekly")} className={cn(cardInteractive, "flex items-center justify-between gap-2")}>
                 <div>
                   <p className={sectionTitle}>{workspaceName}</p>
                   <p className={meta}>

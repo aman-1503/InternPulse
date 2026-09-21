@@ -15,7 +15,7 @@ import { WeeklyTab } from "../components/tabs/WeeklyTab";
 import { AttachmentsTab } from "../components/tabs/AttachmentsTab";
 import { WorkspaceSettings } from "./WorkspaceSettings";
 import { RoleBadge } from "../ui/badges";
-import { btn, cn, meta } from "../ui/primitives";
+import { badge, badgeTones, btn, cn, meta, pageTitle } from "../ui/primitives";
 import { Banner, EmptyState, LoadingScreen } from "../ui/states";
 
 const TABS = ["Overview", "Board", "Blockers", "Feedback", "Activity", "Weekly", "Agent", "Attachments"] as const;
@@ -97,11 +97,11 @@ export function WorkspaceView({
     <div className="flex flex-col gap-3 p-4 md:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-text">{workspaceName ?? workspaceId}</h1>
-          <p className={cn(meta, "flex items-center gap-2")}>
+          <h1 className={pageTitle}>{workspaceName ?? workspaceId}</h1>
+          <p className={cn(meta, "mt-0.5 flex flex-wrap items-center gap-2")}>
             <RoleBadge role={role} /> <strong className="text-text">{ws.you?.displayName}</strong>
             {demoBadge && (
-              <span className="rounded-full bg-warning-muted px-2 py-0.5 text-xs font-medium text-warning" title="Demo identity — not real authentication">
+              <span className={badge(badgeTones.warning)} title="Demo identity — not real authentication">
                 demo identity
               </span>
             )}
@@ -143,13 +143,17 @@ export function WorkspaceView({
         </div>
       ) : (
         <>
-          <nav className="tabs-scroll flex gap-1 border-b border-border">
+          <nav className="tabs-scroll flex gap-1 border-b border-border" role="tablist">
             {TABS.map((t) => (
               <button
                 key={t}
+                role="tab"
+                aria-selected={t === tab}
                 className={cn(
-                  "flex shrink-0 items-center gap-1 border-b-2 px-3 py-2 text-sm font-medium",
-                  t === tab ? "border-accent text-accent" : "border-transparent text-muted hover:text-text",
+                  "flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+                  t === tab
+                    ? "border-accent text-accent"
+                    : "border-transparent text-muted hover:border-border hover:text-text",
                 )}
                 onClick={() => selectTab(t)}
               >
@@ -161,7 +165,7 @@ export function WorkspaceView({
             ))}
           </nav>
 
-          <div>
+          <div className="pt-1">
             {tab === "Overview" && <OverviewTab state={ws} actions={ws.actions} />}
             {tab === "Board" && (
               <Board tasks={ws.tasks} role={role} userId={ws.you?.userId ?? ""} commentCounts={commentCounts} actions={ws.actions} />
@@ -180,14 +184,5 @@ export function WorkspaceView({
 }
 
 function CountDot({ n, tone = "danger" }: { n: number; tone?: "danger" | "neutral" }) {
-  return (
-    <span
-      className={cn(
-        "rounded-full px-1.5 text-xs",
-        tone === "danger" ? "bg-danger-muted text-danger" : "bg-surface-muted text-muted",
-      )}
-    >
-      {n}
-    </span>
-  );
+  return <span className={badge(tone === "danger" ? badgeTones.danger : badgeTones.neutral)}>{n}</span>;
 }

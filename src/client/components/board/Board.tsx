@@ -2,7 +2,7 @@ import { useState } from "react";
 import { TASK_STATUSES, type Role, type Task, type TaskPriority, type TaskStatus } from "../../../shared/protocol";
 import type { WorkspaceActions } from "../../lib/useWorkspace";
 import { TaskEditor, type TaskDraft } from "./TaskEditor";
-import { btn, cn, meta, select } from "../../ui/primitives";
+import { badge, badgeTones, btn, cn, meta, metaXs, select } from "../../ui/primitives";
 import { PriorityBadge } from "../../ui/badges";
 
 const COLUMN_LABEL: Record<TaskStatus, string> = {
@@ -10,6 +10,13 @@ const COLUMN_LABEL: Record<TaskStatus, string> = {
   IN_PROGRESS: "In progress",
   BLOCKED: "Blocked",
   DONE: "Done",
+};
+
+const COLUMN_ACCENT: Record<TaskStatus, string> = {
+  TODO: "bg-muted",
+  IN_PROGRESS: "bg-accent",
+  BLOCKED: "bg-danger",
+  DONE: "bg-success",
 };
 
 const DND_TYPE = "text/x-internpulse-task";
@@ -126,9 +133,10 @@ function Column({
         if (id) onDropTask(id);
       }}
     >
-      <header className="flex items-center justify-between px-1 text-sm font-semibold text-text">
+      <header className="flex items-center gap-2 px-1 py-0.5 text-sm font-semibold text-text">
+        <span className={cn("h-1.5 w-1.5 rounded-full", COLUMN_ACCENT[status])} />
         {COLUMN_LABEL[status]}
-        <span className={meta}>{tasks.length}</span>
+        <span className={cn(badge(badgeTones.neutral), "ml-auto")}>{tasks.length}</span>
       </header>
       <div className="flex flex-col gap-2">
         {tasks.map((task) => (
@@ -170,8 +178,8 @@ function TaskCard({
   return (
     <article
       className={cn(
-        "cursor-default rounded-lg border bg-surface p-3 text-sm shadow-sm",
-        overdue ? "border-danger/40" : "border-border",
+        "cursor-default rounded-lg border bg-surface p-3 text-sm shadow-sm transition-shadow hover:shadow-md",
+        overdue ? "border-l-4 border-l-danger border-y-border border-r-border" : "border-border",
         canEdit && "cursor-grab active:cursor-grabbing",
       )}
       draggable={canEdit}
@@ -180,17 +188,19 @@ function TaskCard({
         e.dataTransfer.effectAllowed = "move";
       }}
     >
-      <div className="font-medium text-text">{task.title}</div>
-      {task.description && <div className={cn(meta, "mt-1")}>{task.description}</div>}
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <div className="flex items-start justify-between gap-2">
+        <span className="font-medium text-text">{task.title}</span>
         <PriorityBadge priority={task.priority} />
+      </div>
+      {task.description && <div className={cn(meta, "mt-1 line-clamp-2")}>{task.description}</div>}
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {task.dueDate && (
-          <span className={cn("text-xs", overdue ? "text-danger" : "text-muted")}>
-            {overdue ? "overdue " : "due "}
+          <span className={cn("inline-flex items-center gap-1 text-xs font-medium", overdue ? "text-danger" : "text-muted")}>
+            {overdue ? "⚠ overdue " : "due "}
             {new Date(task.dueDate).toLocaleDateString()}
           </span>
         )}
-        {commentCount > 0 && <span className={meta}>💬 {commentCount}</span>}
+        {commentCount > 0 && <span className={metaXs}>💬 {commentCount}</span>}
         {canPriorityOnly && (
           <select
             className={cn(select, "h-7 w-auto py-0 text-xs")}

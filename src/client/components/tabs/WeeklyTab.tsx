@@ -13,13 +13,31 @@ const LIFECYCLE = ["DRAFT", "SUBMITTED", "CHANGES_REQUESTED", "RESUBMITTED", "AP
 function Stepper({ status }: { status: WeeklyReport["status"] }) {
   const idx = LIFECYCLE.indexOf(status);
   return (
-    <div className="flex flex-wrap items-center gap-1 text-xs">
-      {LIFECYCLE.map((s, i) => (
-        <span key={s} className={cn("flex items-center gap-1", i === idx ? "font-semibold text-accent" : i < idx ? "text-success" : "text-muted")}>
-          {s.replace(/_/g, " ")}
-          {i < LIFECYCLE.length - 1 && <span className="text-muted">→</span>}
-        </span>
-      ))}
+    <div className="flex flex-wrap items-center gap-0.5">
+      {LIFECYCLE.map((s, i) => {
+        const done = i < idx;
+        const current = i === idx;
+        return (
+          <div key={s} className="flex items-center">
+            <div className="flex flex-col items-center gap-1">
+              <span
+                className={cn(
+                  "flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold",
+                  done && "bg-success text-white",
+                  current && "bg-accent text-white ring-4 ring-accent-muted",
+                  !done && !current && "bg-surface-muted text-muted",
+                )}
+              >
+                {done ? "✓" : i + 1}
+              </span>
+              <span className={cn("whitespace-nowrap text-[11px]", current ? "font-semibold text-accent" : done ? "text-success" : "text-muted")}>
+                {s.replace(/_/g, " ")}
+              </span>
+            </div>
+            {i < LIFECYCLE.length - 1 && <span className={cn("mx-1.5 mb-4 h-px w-4 sm:w-8", done ? "bg-success" : "bg-border")} />}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -154,8 +172,9 @@ function ReportPanel({
         <Banner tone="warning">Mentor asked for changes: {report.mentorFeedback}</Banner>
       )}
       {report.overriddenBy && (
-        <Banner tone="neutral">
-          Manager override by {report.overriddenByName ?? report.overriddenBy}: decided {report.status}.
+        <Banner tone="warning">
+          <strong className="uppercase tracking-wide">Manager override</strong> — {report.overriddenByName ?? report.overriddenBy} decided{" "}
+          <strong>{report.status.replace(/_/g, " ")}</strong>.
         </Banner>
       )}
 

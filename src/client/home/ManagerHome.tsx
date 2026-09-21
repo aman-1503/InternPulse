@@ -1,9 +1,9 @@
 import type { MeUser, Membership } from "../auth/types";
 import { usePortfolio } from "../lib/usePortfolio";
 import { workspaceHash, navigate } from "../router";
-import { btn, card, cn, meta, sectionTitle } from "../ui/primitives";
+import { btn, card, cardInteractive, cn, meta, pageTitle, sectionTitle } from "../ui/primitives";
 import { WeeklyStatusBadge } from "../ui/badges";
-import { LoadingScreen, EmptyState } from "../ui/states";
+import { LoadingScreen, EmptyState, StatTile } from "../ui/states";
 import { AttentionList } from "./AttentionList";
 import { byReasons, flattenAttention } from "./attentionGroups";
 
@@ -41,11 +41,18 @@ export function ManagerHome({ user, memberships }: { user: MeUser; memberships: 
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-4 p-4 md:p-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-text">Where does the team need intervention?</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className={pageTitle}>Where does the team need intervention?</h1>
         <button className={btn("primary")} onClick={() => navigate("#/workspaces/new")}>
           + New workspace
         </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatTile label="Workspaces" value={managerMemberships.length} />
+        <StatTile label="Escalations" value={escalations.length} tone={escalations.length > 0 ? "danger" : "neutral"} />
+        <StatTile label="Long-running blockers" value={longRunningBlockers.length} tone={longRunningBlockers.length > 0 ? "warning" : "neutral"} />
+        <StatTile label="Stuck reviews" value={stuckReviews.length} tone={stuckReviews.length > 0 ? "warning" : "neutral"} />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -63,10 +70,7 @@ export function ManagerHome({ user, memberships }: { user: MeUser; memberships: 
             const openBlockers = snapshot?.blockers.filter((b) => b.status !== "RESOLVED").length ?? 0;
             return (
               <li key={membership.workspaceId}>
-                <a
-                  href={workspaceHash(membership.workspaceId)}
-                  className="block rounded-lg border border-border p-3 hover:border-accent hover:bg-accent-muted/40"
-                >
+                <a href={workspaceHash(membership.workspaceId)} className={cn(cardInteractive, "block")}>
                   <div className="font-medium text-text">{membership.workspaceName}</div>
                   {error ? (
                     <p className="text-sm text-danger">{error}</p>

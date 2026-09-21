@@ -2,9 +2,9 @@ import type { MeUser, Membership } from "../auth/types";
 import { usePortfolio } from "../lib/usePortfolio";
 import { timeAgo } from "../lib/format";
 import { workspaceHash } from "../router";
-import { card, cn, meta, sectionTitle, btn } from "../ui/primitives";
-import { PriorityBadge } from "../ui/badges";
-import { LoadingScreen, EmptyState } from "../ui/states";
+import { card, cardAccent, cn, meta, pageTitle, sectionTitle, btn } from "../ui/primitives";
+import { PriorityBadge, WeeklyStatusBadge } from "../ui/badges";
+import { LoadingScreen, EmptyState, StatTile } from "../ui/states";
 import { flattenAttention, byReasons, REASON_LABEL } from "./attentionGroups";
 
 export function InternHome({ user, memberships }: { user: MeUser; memberships: Membership[] }) {
@@ -40,7 +40,7 @@ export function InternHome({ user, memberships }: { user: MeUser; memberships: M
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-4 p-4 md:p-6">
       <div>
-        <h1 className="text-xl font-semibold text-text">Welcome back, {user.displayName.split(" ")[0]}</h1>
+        <h1 className={pageTitle}>Welcome back, {user.displayName.split(" ")[0]}</h1>
         {workspace && (
           <p className={meta}>
             <a href={workspaceHash(workspace.membership.workspaceId)} className="text-accent hover:underline">
@@ -50,6 +50,13 @@ export function InternHome({ user, memberships }: { user: MeUser; memberships: M
         )}
       </div>
 
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatTile label="Urgent / high" value={urgent.length} tone={urgent.length > 0 ? "danger" : "neutral"} />
+        <StatTile label="Overdue" value={overdue.length} tone={overdue.length > 0 ? "danger" : "neutral"} />
+        <StatTile label="Open blockers" value={openBlockers.length} tone={openBlockers.length > 0 ? "warning" : "neutral"} />
+        <StatTile label="Unread mentions" value={mentions.length} tone={mentions.length > 0 ? "accent" : "neutral"} />
+      </div>
+
       {changesRequested.length > 0 && (
         <div className="rounded-lg border border-warning/30 bg-warning-muted p-3 text-sm text-warning">
           {REASON_LABEL.REVIEW_CHANGES_REQUESTED} — check your weekly review.
@@ -57,16 +64,19 @@ export function InternHome({ user, memberships }: { user: MeUser; memberships: M
       )}
 
       <div className="grid gap-4 md:grid-cols-2">
-        <section className={cn(card, "flex flex-col gap-2")}>
-          <h2 className={sectionTitle}>Next actions</h2>
+        <section className={cn(card, "flex flex-col gap-2 md:col-span-2")}>
+          <h2 className={sectionTitle}>What should I do next?</h2>
           {nextActions.length === 0 ? (
             <p className={meta}>Nothing outstanding — keep the updates coming.</p>
           ) : (
             <ul className="flex flex-col gap-1.5 text-sm">
               {nextActions.map((a) => (
                 <li key={a.item.id}>
-                  <a href={workspaceHash(a.workspaceId, a.item.navigate.tab)} className="hover:underline">
-                    → {a.item.title}
+                  <a
+                    href={workspaceHash(a.workspaceId, a.item.navigate.tab)}
+                    className="flex items-center gap-1.5 rounded-md px-2 py-1 -mx-2 hover:bg-surface-muted hover:underline"
+                  >
+                    <span className="text-accent">→</span> {a.item.title}
                   </a>
                 </li>
               ))}
@@ -79,7 +89,7 @@ export function InternHome({ user, memberships }: { user: MeUser; memberships: M
           )}
         </section>
 
-        <section className={cn(card, "flex flex-col gap-2")}>
+        <section className={cn(urgent.length > 0 || overdue.length > 0 ? cardAccent("danger") : card, "flex flex-col gap-2")}>
           <h2 className={sectionTitle}>Urgent &amp; overdue</h2>
           <ul className="flex flex-col gap-1.5 text-sm">
             {urgent.slice(0, 5).map((t) => (
@@ -137,8 +147,9 @@ export function InternHome({ user, memberships }: { user: MeUser; memberships: M
         <section className={cn(card, "flex flex-col gap-2 md:col-span-2")}>
           <h2 className={sectionTitle}>Weekly review status</h2>
           {weekly ? (
-            <p className="text-sm">
-              {weekly.reportingPeriod} — <span className="font-medium">{weekly.status.replace(/_/g, " ")}</span>
+            <p className="flex items-center gap-2 text-sm">
+              <span className="font-medium">{weekly.reportingPeriod}</span>
+              <WeeklyStatusBadge status={weekly.status} />
             </p>
           ) : (
             <p className={meta}>No weekly report started yet.</p>

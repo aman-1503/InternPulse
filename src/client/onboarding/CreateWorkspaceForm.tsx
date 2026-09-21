@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useAuth } from "../auth/AuthProvider";
 import { createWorkspace, ApiError } from "../lib/api";
 import { navigate, workspaceHash } from "../router";
-import { btn, card, cn, input, meta, row, stack } from "../ui/primitives";
+import { btn, card, cn, input, meta, pageTitle, row, stack } from "../ui/primitives";
 import { Banner } from "../ui/states";
 
 type CreatorRole = "mentor" | "manager";
@@ -66,17 +66,28 @@ export function CreateWorkspaceForm() {
   if (!creatorRole) {
     return (
       <div className="mx-auto flex min-h-screen max-w-md flex-col justify-center gap-4 p-4">
-        <h1 className="text-lg font-semibold text-text">Set up a new workspace</h1>
-        <p className={meta}>Are you setting this up as the mentor or the manager of this internship/project?</p>
+        <div className="mb-2 flex flex-col items-center gap-3 text-center">
+          <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent text-base font-bold text-white shadow-sm">IP</span>
+          <div>
+            <h1 className="text-lg font-semibold text-text">Set up a new workspace</h1>
+            <p className={meta}>Are you setting this up as the mentor or the manager of this internship/project?</p>
+          </div>
+        </div>
         <div className="grid grid-cols-2 gap-3">
-          <button className={cn(card, "py-6 text-center font-medium hover:border-accent")} onClick={() => chooseRole("mentor")}>
+          <button
+            className={cn(card, "flex flex-col items-center gap-1 py-6 text-center font-medium transition-colors hover:border-accent hover:bg-accent-muted/30")}
+            onClick={() => chooseRole("mentor")}
+          >
             Mentor
           </button>
-          <button className={cn(card, "py-6 text-center font-medium hover:border-accent")} onClick={() => chooseRole("manager")}>
+          <button
+            className={cn(card, "flex flex-col items-center gap-1 py-6 text-center font-medium transition-colors hover:border-accent hover:bg-accent-muted/30")}
+            onClick={() => chooseRole("manager")}
+          >
             Manager
           </button>
         </div>
-        <p className={meta}>Interns join through invitation only — there's no self-service intern signup.</p>
+        <p className={cn(meta, "text-center")}>Interns join through invitation only — there's no self-service intern signup.</p>
       </div>
     );
   }
@@ -84,7 +95,7 @@ export function CreateWorkspaceForm() {
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-4 p-4 md:p-6">
       <div>
-        <h1 className="text-lg font-semibold text-text">New workspace — you're the {creatorRole}</h1>
+        <h1 className={pageTitle}>New workspace — you're the {creatorRole}</h1>
         <p className={meta}>
           Invited people must sign in with the exact email address below. Roles come from
           membership/invitation only — nobody can self-promote later.

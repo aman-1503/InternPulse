@@ -28,11 +28,17 @@ export function WorkspaceSwitcher({
 
   return (
     <div className="relative" ref={ref}>
-      <button className={btn("default")} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        {current ? current.workspaceName : "Switch workspace"} ▾
+      <button
+        className={cn(btn("default"), "min-w-0 max-w-56 justify-between font-medium")}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="truncate">{current ? current.workspaceName : "Switch workspace"}</span>
+        <span className={cn("shrink-0 transition-transform", open && "rotate-180")}>▾</span>
       </button>
       {open && (
-        <div role="listbox" className="absolute left-0 z-30 mt-2 w-72 rounded-lg border border-border bg-surface p-2 shadow-lg">
+        <div role="listbox" className="absolute left-0 z-30 mt-2 w-72 rounded-lg border border-border bg-surface p-2 shadow-lg ring-1 ring-black/5">
           <ul className="flex flex-col gap-0.5">
             {memberships.map((m) => (
               <li key={m.workspaceId}>
@@ -40,7 +46,7 @@ export function WorkspaceSwitcher({
                   role="option"
                   aria-selected={m.workspaceId === currentWorkspaceId}
                   className={cn(
-                    "flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-surface-muted",
+                    "flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-surface-muted",
                     m.workspaceId === currentWorkspaceId && "bg-accent-muted",
                   )}
                   onClick={() => {
