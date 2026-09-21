@@ -5,11 +5,11 @@ import { ManagerOverview } from "../components/ManagerOverview";
 import { WorkspaceView } from "../workspace/WorkspaceView";
 import { navigate } from "../router";
 
-type DemoRoute = { view: "overview" } | { view: "workspace"; workspaceId: string };
+type DemoRoute = { view: "overview" } | { view: "workspace"; workspaceId: string; tab?: string };
 
 function parseDemoHash(hash: string): DemoRoute {
-  const m = hash.match(/^#\/demo\/w\/([a-zA-Z0-9_-]{1,64})$/);
-  if (m) return { view: "workspace", workspaceId: m[1] };
+  const m = hash.match(/^#\/demo\/w\/([a-zA-Z0-9_-]{1,64})(?:\/([a-z]+))?$/);
+  if (m) return { view: "workspace", workspaceId: m[1], tab: m[2] };
   return { view: "overview" };
 }
 
@@ -52,6 +52,7 @@ export function DemoApp() {
         <WorkspaceView
           key={`${route.workspaceId}:${identity.userId}:${isSeeded ? "seed" : devRole}`}
           workspaceId={route.workspaceId}
+          urlTab={route.tab}
           mode={{ kind: "demo", userId: identity.userId, displayName: identity.displayName, devRole }}
           demoBadge
           onBack={() => goto("#/demo")}

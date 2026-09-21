@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ChangeEvent, type KeyboardEvent, type RefObject } from "react";
+import { useCallback, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent, type RefObject } from "react";
 import type { WorkspaceMember } from "../../shared/protocol";
 import { detectMentionTrigger, filterMentionCandidates, mentionInsertionText } from "./mentionMatch";
 
@@ -18,6 +18,7 @@ export function useMentionSuggestions(
 ) {
   const [triggerIndex, setTriggerIndex] = useState<number | null>(null);
   const [query, setQuery] = useState<string | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
 
   const suggestions = useMemo(
     () => (query === null ? [] : filterMentionCandidates(members, query)),
@@ -27,6 +28,7 @@ export function useMentionSuggestions(
   const close = useCallback(() => {
     setTriggerIndex(null);
     setQuery(null);
+    setActiveIndex(0);
   }, []);
 
   const detect = useCallback(
@@ -34,7 +36,16 @@ export function useMentionSuggestions(
       const trigger = detectMentionTrigger(text, caret);
       if (!trigger) return close();
       setTriggerIndex(trigger.at);
-      setQuery(trigger.query);
+      // onFieldKeyUp calls detect() on every key release, including
+      // ArrowUp/Down/Enter/Tab/Escape (which onFieldKeyDown already
+      // preventDefault()s, so the text/caret haven't actually moved) —
+      // only reset the keyboard-highlighted index when the query text
+      // itself changed, or every arrow-key press would immediately snap
+      // back to index 0 on its own keyup.
+      setQuery((prevQuery) => {
+        if (prevQuery !== trigger.query) setActiveIndex(0);
+        return trigger.query;
+      });
     },
     [close],
   );
@@ -68,13 +79,65 @@ export function useMentionSuggestions(
     [onChange, detect],
   );
 
+  // Set by onFieldKeyDown when it fully handles a key (preventDefault()'d) —
+  // the field's text/caret didn't actually move, so the following keyup
+  // must NOT re-run detect(): it would just find the same still-active
+  // trigger and either reopen a popup Escape just closed, or reset the
+  // ArrowUp/Down highlight it just moved back to index 0.
+  const consumedRef = useRef(false);
+
   const onFieldKeyUp = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+      if (consumedRef.current) {
+        consumedRef.current = false;
+        return;
+      }
       const el = e.currentTarget;
       detect(el.value, el.selectionStart ?? el.value.length);
     },
     [detect],
   );
 
-  return { suggestions, open: suggestions.length > 0, close, insert, onFieldChange, onFieldKeyUp };
+  const open = suggestions.length > 0;
+
+  /**
+   * ArrowUp/Down move the highlighted suggestion, Enter/Tab pick it, Escape
+   * closes — the keyboard-navigation contract any autocomplete needs. Callers
+   * wire this into their own onKeyDown ahead of their own Enter/Tab handling
+   * and skip that handling when this returns true (the key was consumed here).
+   */
+  const onFieldKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>): boolean => {
+      if (!open) return false;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        consumedRef.current = true;
+        setActiveIndex((i) => (i + 1) % suggestions.length);
+        return true;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        consumedRef.current = true;
+        setActiveIndex((i) => (i - 1 + suggestions.length) % suggestions.length);
+        return true;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        consumedRef.current = true;
+        const chosen = suggestions[Math.min(activeIndex, suggestions.length - 1)];
+        if (chosen) insert(chosen);
+        return true;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        consumedRef.current = true;
+        close();
+        return true;
+      }
+      return false;
+    },
+    [open, suggestions, activeIndex, insert, close],
+  );
+
+  return { suggestions, open, activeIndex, close, insert, onFieldChange, onFieldKeyUp, onFieldKeyDown };
 }

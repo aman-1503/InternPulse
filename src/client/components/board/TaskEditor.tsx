@@ -45,14 +45,27 @@ export function TaskEditor({
   return (
     <div className={cn(card, "flex flex-col gap-2")}>
       <div className="text-sm font-semibold text-text">{task ? "Edit task" : "New task"}</div>
-      <label className="text-sm font-medium">Title</label>
-      <input className={input} value={title} autoFocus onChange={(e) => setTitle(e.target.value)} maxLength={200} />
-      <label className="text-sm font-medium">Description</label>
-      <textarea className={textarea} value={description} onChange={(e) => setDescription(e.target.value)} rows={3} maxLength={2000} />
+      <label className="text-sm font-medium" htmlFor="task-title">
+        Title
+      </label>
+      <input id="task-title" className={input} value={title} autoFocus onChange={(e) => setTitle(e.target.value)} maxLength={200} />
+      <label className="text-sm font-medium" htmlFor="task-description">
+        Description
+      </label>
+      <textarea
+        id="task-description"
+        className={textarea}
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        rows={3}
+        maxLength={2000}
+      />
       <div className={row}>
         <div className="flex-1">
-          <label className="text-sm font-medium">Priority</label>
-          <select className={select} value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority | "")}>
+          <label className="text-sm font-medium" htmlFor="task-priority">
+            Priority
+          </label>
+          <select id="task-priority" className={select} value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority | "")}>
             <option value="">none</option>
             {TASK_PRIORITIES.map((p) => (
               <option key={p} value={p}>
@@ -62,13 +75,17 @@ export function TaskEditor({
           </select>
         </div>
         <div className="flex-1">
-          <label className="text-sm font-medium">Due date</label>
-          <input type="date" className={input} value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          <label className="text-sm font-medium" htmlFor="task-due-date">
+            Due date
+          </label>
+          <input id="task-due-date" type="date" className={input} value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
         </div>
         {task && (
           <div className="flex-1">
-            <label className="text-sm font-medium">Status</label>
-            <select className={select} value={status} onChange={(e) => setStatus(e.target.value as TaskStatus)}>
+            <label className="text-sm font-medium" htmlFor="task-status">
+              Status
+            </label>
+            <select id="task-status" className={select} value={status} onChange={(e) => setStatus(e.target.value as TaskStatus)}>
               {TASK_STATUSES.map((s) => (
                 <option key={s} value={s}>
                   {s}

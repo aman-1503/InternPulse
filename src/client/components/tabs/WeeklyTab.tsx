@@ -198,8 +198,10 @@ function ReportPanel({
 
       {reviewable && (
         <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
-          <label className="text-sm font-medium">Feedback (required for changes)</label>
-          <textarea className={textarea} rows={3} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+          <label className="text-sm font-medium" htmlFor="weekly-review-feedback">
+            Feedback (required for changes)
+          </label>
+          <textarea id="weekly-review-feedback" className={textarea} rows={3} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
           <div className={row}>
             <button className={btn("primary")} disabled={busy} onClick={() => onReview("APPROVE")}>
               Approve
@@ -213,8 +215,10 @@ function ReportPanel({
 
       {overridable && (
         <div className="flex flex-col gap-2 rounded-lg border border-warning/30 bg-warning-muted/40 p-3">
-          <label className="text-sm font-medium">Manager override — note required (recorded in the audit history)</label>
-          <textarea className={textarea} rows={3} value={overrideNote} onChange={(e) => setOverrideNote(e.target.value)} />
+          <label className="text-sm font-medium" htmlFor="weekly-override-note">
+            Manager override — note required (recorded in the audit history)
+          </label>
+          <textarea id="weekly-override-note" className={textarea} rows={3} value={overrideNote} onChange={(e) => setOverrideNote(e.target.value)} />
           <div className={row}>
             <button className={btn("primary")} disabled={busy || !overrideNote.trim()} onClick={() => onOverride("APPROVE", overrideNote.trim())}>
               Override: Approve

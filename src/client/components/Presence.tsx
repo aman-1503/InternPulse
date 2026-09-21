@@ -13,7 +13,7 @@ const STATUS_TONE: Record<SocketStatus, keyof typeof badgeTones> = {
 export function PresenceBar({ presence, status }: { presence: PresenceState; status: SocketStatus }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span className={badge(badgeTones[STATUS_TONE[status]])}>{status}</span>
+      <span data-testid="socket-status" className={badge(badgeTones[STATUS_TONE[status]])}>{status}</span>
       <span className={meta}>{presence.count} online</span>
       <span className="flex flex-wrap gap-1.5">
         {presence.members.map((m) => (

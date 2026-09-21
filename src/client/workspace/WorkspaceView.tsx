@@ -59,9 +59,20 @@ export function WorkspaceView({
     if (urlTab && SLUG_TAB[urlTab]) setTab(SLUG_TAB[urlTab]);
   }, [urlTab]);
 
+  // workspaceHash() always builds the PRODUCTION "#/w/..." form. Pushing
+  // that while mounted under DemoApp would produce a hash that no longer
+  // starts with "#/demo" — Root's hashchange listener would then unmount
+  // the entire demo tree and mount ProductionApp (a real user just
+  // clicking a tab in the demo experience would get bounced to the
+  // "Sign-in required" screen). Demo needs its own "#/demo/w/..." form.
+  const inWorkspaceHash = (tabSlug?: string) =>
+    mode.kind === "demo"
+      ? `#/demo/w/${workspaceId}${tabSlug ? `/${tabSlug}` : ""}`
+      : workspaceHash(workspaceId, tabSlug);
+
   const selectTab = (t: Tab) => {
     setTab(t);
-    navigate(workspaceHash(workspaceId, TAB_SLUG[t]));
+    navigate(inWorkspaceHash(TAB_SLUG[t]));
   };
 
   if (ws.status === "unauthorized") {
@@ -112,7 +123,7 @@ export function WorkspaceView({
             <AddMemberForm workspaceId={workspaceId} mode={mode} members={ws.members} />
           )}
           {(role === "mentor" || role === "manager") && (
-            <button className={btn("default")} onClick={() => navigate(workspaceHash(workspaceId, "settings"))}>
+            <button className={btn("default")} onClick={() => navigate(inWorkspaceHash("settings"))}>
               Settings
             </button>
           )}
@@ -131,7 +142,7 @@ export function WorkspaceView({
 
       {showSettings ? (
         <div className="flex flex-col gap-3">
-          <button className={cn(btn("ghost"), "self-start")} onClick={() => navigate(workspaceHash(workspaceId))}>
+          <button className={cn(btn("ghost"), "self-start")} onClick={() => navigate(inWorkspaceHash())}>
             ← Back to workspace
           </button>
           <WorkspaceSettings

@@ -30,11 +30,13 @@ export function FeedbackTab({ state, actions }: { state: WorkspaceState; actions
               value={content}
               onChange={mention.onFieldChange}
               onKeyUp={mention.onFieldKeyUp}
+              onKeyDown={mention.onFieldKeyDown}
             />
             <MentionSuggestions
               open={mention.open}
               triggerRef={contentRef}
               suggestions={mention.suggestions}
+              activeIndex={mention.activeIndex}
               onPick={mention.insert}
               onClose={mention.close}
             />

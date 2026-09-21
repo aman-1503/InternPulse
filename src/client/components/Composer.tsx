@@ -46,6 +46,7 @@ export function Composer({
         onChange={mention.onFieldChange}
         onKeyUp={mention.onFieldKeyUp}
         onKeyDown={(e) => {
+          if (mention.onFieldKeyDown(e)) return;
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit();
         }}
       />
@@ -54,6 +55,7 @@ export function Composer({
           open={mention.open}
           triggerRef={fieldRef}
           suggestions={mention.suggestions}
+          activeIndex={mention.activeIndex}
           onPick={mention.insert}
           onClose={mention.close}
         />

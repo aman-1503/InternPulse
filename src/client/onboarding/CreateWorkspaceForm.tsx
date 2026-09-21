@@ -105,20 +105,28 @@ export function CreateWorkspaceForm() {
       {error && <Banner tone="danger">{error}</Banner>}
 
       <section className={cn(card, stack)}>
-        <label className="text-sm font-medium">Project / internship name</label>
-        <input className={input} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Payments Service Revamp" />
+        <label className="text-sm font-medium" htmlFor="ws-name">
+          Project / internship name
+        </label>
+        <input id="ws-name" className={input} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Payments Service Revamp" />
         <div className={row}>
           <div className="flex-1">
-            <label className="text-sm font-medium">Team (optional)</label>
-            <input className={input} value={team} onChange={(e) => setTeam(e.target.value)} />
+            <label className="text-sm font-medium" htmlFor="ws-team">
+              Team (optional)
+            </label>
+            <input id="ws-team" className={input} value={team} onChange={(e) => setTeam(e.target.value)} />
           </div>
           <div className="flex-1">
-            <label className="text-sm font-medium">Start date (optional)</label>
-            <input type="date" className={input} value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            <label className="text-sm font-medium" htmlFor="ws-start-date">
+              Start date (optional)
+            </label>
+            <input id="ws-start-date" type="date" className={input} value={startDate} onChange={(e) => setStartDate(e.target.value)} />
           </div>
           <div className="flex-1">
-            <label className="text-sm font-medium">End date (optional)</label>
-            <input type="date" className={input} value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            <label className="text-sm font-medium" htmlFor="ws-end-date">
+              End date (optional)
+            </label>
+            <input id="ws-end-date" type="date" className={input} value={endDate} onChange={(e) => setEndDate(e.target.value)} />
           </div>
         </div>
       </section>

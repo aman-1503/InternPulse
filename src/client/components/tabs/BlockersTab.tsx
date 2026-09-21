@@ -86,7 +86,10 @@ function BlockerCard({ b, state, actions }: { b: Blocker; state: WorkspaceState;
                 value={comment}
                 onChange={mention.onFieldChange}
                 onKeyUp={mention.onFieldKeyUp}
-                onKeyDown={(e) => e.key === "Enter" && !mention.open && submitComment()}
+                onKeyDown={(e) => {
+                  if (mention.onFieldKeyDown(e)) return;
+                  if (e.key === "Enter") submitComment();
+                }}
               />
               <button className={btn("default")} disabled={!comment.trim()} onClick={submitComment}>
                 Comment
@@ -95,6 +98,7 @@ function BlockerCard({ b, state, actions }: { b: Blocker; state: WorkspaceState;
                 open={mention.open}
                 triggerRef={commentRef}
                 suggestions={mention.suggestions}
+                activeIndex={mention.activeIndex}
                 onPick={mention.insert}
                 onClose={mention.close}
               />
@@ -170,11 +174,13 @@ export function BlockersTab({ state, actions }: { state: WorkspaceState; actions
               value={description}
               onChange={descriptionMention.onFieldChange}
               onKeyUp={descriptionMention.onFieldKeyUp}
+              onKeyDown={descriptionMention.onFieldKeyDown}
             />
             <MentionSuggestions
               open={descriptionMention.open}
               triggerRef={descriptionRef}
               suggestions={descriptionMention.suggestions}
+              activeIndex={descriptionMention.activeIndex}
               onPick={descriptionMention.insert}
               onClose={descriptionMention.close}
             />
