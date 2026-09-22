@@ -48,8 +48,7 @@ describe("WorkspaceSocket — unauthorized vs. genuine network failure", () => {
   function makeSocket(onStatusChange = vi.fn()) {
     const socket = new WorkspaceSocket({
       workspaceId: "demo",
-      userId: "u-x",
-      displayName: "X",
+      mode: { kind: "demo", userId: "u-x", displayName: "X" },
       onMessage: vi.fn(),
       onStatusChange,
     });

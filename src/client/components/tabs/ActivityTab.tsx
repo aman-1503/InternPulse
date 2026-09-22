@@ -1,6 +1,7 @@
 import type { ActivityEntry } from "../../../shared/protocol";
 import type { WorkspaceState } from "../../lib/useWorkspace";
 import { timeAgo } from "../../lib/format";
+import { card, meta, sectionTitle } from "../../ui/primitives";
 
 const VERB: Record<ActivityEntry["type"], string> = {
   "task.created": "created task",
@@ -28,18 +29,16 @@ function describe(a: ActivityEntry): string {
 
 export function ActivityTab({ state }: { state: WorkspaceState }) {
   return (
-    <section className="card">
-      <h3>Activity</h3>
-      <ul className="list timeline">
+    <section className={card}>
+      <h3 className={sectionTitle}>Activity</h3>
+      <ul className="mt-2 flex flex-col gap-1.5 text-sm">
         {state.activity.map((a) => (
-          <li key={a.id}>
-            <span className="meta time">{timeAgo(a.createdAt)}</span>
-            <span>
-              <strong>{a.actorName}</strong> {describe(a)}
-            </span>
+          <li key={a.id} className="flex flex-wrap items-center gap-1.5">
+            <span className={meta}>{timeAgo(a.createdAt)}</span>
+            <strong>{a.actorName}</strong> {describe(a)}
           </li>
         ))}
-        {state.activity.length === 0 && <li className="meta">No activity yet.</li>}
+        {state.activity.length === 0 && <li className={meta}>No activity yet.</li>}
       </ul>
     </section>
   );

@@ -112,7 +112,10 @@ export class WorkspaceDO extends DurableObject<Env> {
       const members = results.map((r) => ({ ...r, handle: deriveHandle(r.displayName) }));
       this.membersCache = { at: Date.now(), workspaceId, members };
       return members;
-    } catch {
+    } catch (err) {
+      // Never cached — a transient D1 error should be retried on the very
+      // next call, not frozen as "no members" for MEMBERS_TTL_MS.
+      console.error("loadMembers failed (non-fatal, roster/mentions degraded)", workspaceId, err);
       return [];
     }
   }
@@ -271,7 +274,10 @@ export class WorkspaceDO extends DurableObject<Env> {
     role: Role | null,
   ): Promise<Reminder | null> {
     const reminder = this.store.acknowledgeReminder(id, userId, role);
-    if (reminder) this.broadcast({ type: "reminder.updated", reminder });
+    if (reminder) {
+      this.broadcast({ type: "reminder.updated", reminder });
+      this.broadcastAttentionUpdates();
+    }
     return reminder;
   }
 
@@ -312,7 +318,10 @@ export class WorkspaceDO extends DurableObject<Env> {
     extra: { mentorFeedback?: string | null; round?: number } = {},
   ): Promise<WeeklyReport | null> {
     const report = this.store.setWeeklyStatus(id, status, extra);
-    if (report) this.broadcast({ type: "weekly.updated", report });
+    if (report) {
+      this.broadcast({ type: "weekly.updated", report });
+      this.broadcastAttentionUpdates();
+    }
     return report;
   }
 
@@ -333,6 +342,7 @@ export class WorkspaceDO extends DurableObject<Env> {
         { status: report.status },
       ),
     );
+    this.broadcastAttentionUpdates();
     return report;
   }
 
@@ -440,6 +450,7 @@ export class WorkspaceDO extends DurableObject<Env> {
     try {
       const events = await this.dispatch(msg, who);
       for (const ev of events) this.broadcast(ev);
+      this.broadcastAttentionUpdates();
       this.sendTo(ws, { type: "ack", requestId });
       // Phase 4A: enqueue compact history-index events. Best-effort — the
       // authoritative record is already persisted; Vectorize is not source of
@@ -826,11 +837,21 @@ export class WorkspaceDO extends DurableObject<Env> {
     };
   }
 
-  /** Reads the Worker-authoritative identity, with plain-param fallbacks for direct testing. */
+  /**
+   * Reads the Worker-authoritative identity. `_uid`/`_name`/`_role` are set
+   * by the Worker only after it has verified the caller (Cloudflare Access
+   * in production, the scoped demo query-param path in demo mode) and
+   * resolved their D1 membership role. There is deliberately no fallback to
+   * raw `userId`/`displayName` query params — this DO is not reachable
+   * directly from the internet (only the Worker holds its binding), and a
+   * request missing `_uid` means it did not go through that authorization
+   * boundary, so it gets treated as unauthenticated/read-only rather than
+   * trusted.
+   */
   private readIdentity(url: URL): SocketAttachment {
     const p = url.searchParams;
-    const userId = p.get("_uid") || p.get("userId") || `anon-${crypto.randomUUID().slice(0, 8)}`;
-    const displayName = p.get("_name") || p.get("displayName") || "Anonymous";
+    const userId = p.get("_uid") ?? `unverified-${crypto.randomUUID().slice(0, 8)}`;
+    const displayName = p.get("_name") ?? "Unverified";
     const rawRole = p.get("_role");
     const role: Role | null =
       rawRole === "intern" || rawRole === "mentor" || rawRole === "manager" ? rawRole : null;
@@ -860,6 +881,39 @@ export class WorkspaceDO extends DurableObject<Env> {
     }
     const members = [...seen.values()];
     return { count: members.length, members };
+  }
+
+  /**
+   * attentionItems is role/user-curated (see attention.ts), so it can't be
+   * broadcast as one shared message the way task/blocker events are — each
+   * connected socket gets its own recomputed list. Without this, an item
+   * (e.g. "blocker waiting on you") would only ever refresh on reconnect,
+   * so a mentor who resolves their own blocker would keep seeing it as
+   * needing attention until they reloaded.
+   */
+  private broadcastAttentionUpdates(): void {
+    const tasks = this.store.listTasks();
+    const blockers = this.store.listBlockers();
+    const weeklyReports = this.store.listWeeklyReports();
+    const lastUpdate = this.store.latestUpdate();
+    const lastUpdateAt = lastUpdate ? lastUpdate.createdAt : null;
+
+    for (const ws of this.liveSockets()) {
+      const who = this.attachmentOf(ws);
+      if (!who.role) continue;
+      const items = computeAttentionItems({
+        role: who.role,
+        userId: who.userId,
+        now: Date.now(),
+        tasks,
+        blockers,
+        weeklyReports,
+        mentions: this.store.listMentionsFor(who.userId),
+        reminders: this.store.listRemindersFor(who.userId, who.role),
+        lastUpdateAt,
+      });
+      this.sendTo(ws, { type: "attention.updated", items });
+    }
   }
 
   private sendTo(ws: WebSocket, msg: ServerMessage): void {

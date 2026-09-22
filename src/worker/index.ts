@@ -12,6 +12,22 @@ import {
   isExtractable,
   safeFilename,
 } from "./documents";
+import { AccessAuthError, getAuthenticatedIdentity } from "./access-auth";
+import {
+  IdentityConflictError,
+  resolveProductionUser,
+  updateDisplayName,
+  type ProductionUser,
+} from "./production-identity";
+import {
+  acceptInvitation,
+  createInvitation,
+  listPendingInvitationsForEmailEnriched,
+  listWorkspaceInvitations,
+  revokeInvitation,
+} from "./invitations";
+import { handleAdminRoute } from "./admin-routes";
+import { recordAudit } from "./audit";
 import type {
   DocumentIndexEvent,
   HealthResponse,
@@ -36,38 +52,104 @@ const DEV_ROLES: readonly Role[] = ["intern", "mentor", "manager"];
 const json = (data: unknown, status = 200): Response =>
   Response.json(data, { status, headers: { "cache-control": "no-store" } });
 
+// -----------------------------------------------------------------------------
+// Identity resolution. Every request is either:
+//   - a PRODUCTION request (any path NOT under /api/demo/): identity MUST come
+//     from a cryptographically verified Cloudflare Access assertion. The
+//     browser never gets to assert userId/displayName/role here.
+//   - a DEMO request (/api/demo/*): identity is the pre-existing unauthenticated
+//     query-param mechanism, but every workspace touched this way must have
+//     is_demo = 1 in D1, so demo traffic can never reach real workspace data
+//     even if a client sends a real workspace id.
+//
+// In both cases the actual authorization decision — "what role, if any, does
+// this user have in this workspace" — still comes from exactly one place:
+// resolveRole() reading D1 `memberships`, scoped to the matching is_demo value.
+// -----------------------------------------------------------------------------
+
+interface Caller {
+  userId: string;
+  displayName: string;
+  role: Role;
+}
+
+/** Resolves + validates the production user for this request, or a Response to return as-is. */
+async function requireProductionUser(request: Request, env: Env): Promise<ProductionUser | Response> {
+  let identity;
+  try {
+    identity = await getAuthenticatedIdentity(request, env);
+  } catch (err) {
+    const message = err instanceof AccessAuthError ? err.message : "authentication required";
+    return json({ error: message, code: "unauthenticated" }, 401);
+  }
+  let user: ProductionUser;
+  try {
+    user = await resolveProductionUser(env, identity);
+  } catch (err) {
+    if (err instanceof IdentityConflictError) {
+      return json({ error: err.message, code: "identity_conflict" }, 409);
+    }
+    throw err;
+  }
+  if (user.accountStatus !== "ACTIVE") {
+    return json(
+      { error: "this account is not active", code: `account_${user.accountStatus.toLowerCase()}` },
+      403,
+    );
+  }
+  return user;
+}
+
+/**
+ * Resolves the caller's (userId, displayName) for either mode. Does NOT
+ * resolve a workspace role — that always happens afterward via resolveRole,
+ * scoped to the workspace's is_demo value.
+ */
+async function resolveCaller(
+  request: Request,
+  env: Env,
+  url: URL,
+  demoMode: boolean,
+): Promise<{ userId: string; displayName: string } | Response> {
+  if (demoMode) {
+    if ((env.DEMO_MODE as string) === "off") {
+      return json({ error: "demo mode is disabled", code: "demo_disabled" }, 404);
+    }
+    const userId = url.searchParams.get("userId") || `anon-${crypto.randomUUID().slice(0, 8)}`;
+    const displayName = url.searchParams.get("displayName") || "Anonymous";
+    return { userId, displayName };
+  }
+  const userOrResponse = await requireProductionUser(request, env);
+  if (userOrResponse instanceof Response) return userOrResponse;
+  return { userId: userOrResponse.id, displayName: userOrResponse.displayName };
+}
+
 /**
  * THE authorization boundary. Every workspace route (HTTP + WebSocket upgrade)
  * calls this exactly once; nothing downstream re-derives identity.
  *
  * D1 `memberships` is the ONLY source of authorization: a role is returned iff
- * this exact (workspaceId, userId) has a membership row. There is no fallback
- * for an unmapped identity — `null` here means "not a member of this
- * workspace" and every caller MUST deny access entirely (no anonymous or
+ * this exact (workspaceId, userId) has a membership row AND the workspace's
+ * is_demo flag matches the route the caller used to get here. There is no
+ * fallback for an unmapped identity or a scope mismatch — `null` here means
+ * "no access" and every caller MUST deny access entirely (no anonymous or
  * read-only browsing of a workspace you don't belong to).
- *
- * DEMO IDENTITY (not production auth): `userId` / `displayName` come from the
- * browser (see src/client/identity.ts) and are unauthenticated — but WHICH
- * workspaces/roles they can act as is still governed entirely by real D1 rows
- * seeded for the demo identities. A demo identity can "switch roles" only in
- * the sense of connecting as one of its own membership rows in a workspace it
- * actually belongs to; it can never acquire a role in a workspace it isn't a
- * member of. `devRole` is intentionally NOT consulted here — it is honoured
- * only by workspace *creation* (`handleCreateWorkspace`), where by definition
- * no membership can exist yet.
- *
- * To make this real, replace ONLY this function body: read a verified
- * principal from a Cloudflare-native source — a signed cookie/JWT set by
- * Cloudflare Access (`Cf-Access-Jwt-Assertion`), or a session Durable Object —
- * and look its id up in D1 `memberships`. The `Caller` shape, the route
- * handlers, `canMutate`, and the DO all stay unchanged.
  */
-async function resolveRole(env: Env, workspaceId: string, userId: string): Promise<Role | null> {
+async function resolveRole(
+  env: Env,
+  workspaceId: string,
+  userId: string,
+  demoMode: boolean,
+): Promise<Role | null> {
   try {
     const row = await env.DB.prepare(
-      "SELECT role FROM memberships WHERE workspace_id = ? AND user_id = ? LIMIT 1",
+      `SELECT m.role AS role
+         FROM memberships m
+         JOIN workspaces w ON w.id = m.workspace_id
+        WHERE m.workspace_id = ? AND m.user_id = ? AND w.is_demo = ?
+        LIMIT 1`,
     )
-      .bind(workspaceId, userId)
+      .bind(workspaceId, userId, demoMode ? 1 : 0)
       .first<{ role: Role }>();
     return row?.role ?? null;
   } catch {
@@ -76,33 +158,31 @@ async function resolveRole(env: Env, workspaceId: string, userId: string): Promi
   }
 }
 
-async function handleOverview(env: Env, url: URL): Promise<Response> {
-  const userId = url.searchParams.get("userId") ?? "";
+async function workspaceIsDemo(env: Env, workspaceId: string): Promise<boolean | null> {
+  try {
+    const row = await env.DB.prepare("SELECT is_demo AS isDemo FROM workspaces WHERE id = ?")
+      .bind(workspaceId)
+      .first<{ isDemo: number }>();
+    return row ? row.isDemo === 1 : null;
+  } catch {
+    return null;
+  }
+}
 
+async function handleOverview(env: Env, callerId: string): Promise<Response> {
   let baseRows: Array<{ id: string; name: string; slug: string }>;
   let demoFallback = false;
   try {
-    const managed = userId
-      ? await env.DB.prepare(
-          `SELECT w.id, w.name, w.slug
-             FROM workspaces w
-             JOIN memberships m ON m.workspace_id = w.id
-            WHERE m.user_id = ? AND m.role = 'manager'
-            ORDER BY w.created_at DESC`,
-        )
-          .bind(userId)
-          .all<{ id: string; name: string; slug: string }>()
-      : { results: [] as Array<{ id: string; name: string; slug: string }> };
-
-    if (managed.results.length > 0) {
-      baseRows = managed.results;
-    } else {
-      demoFallback = true;
-      const all = await env.DB.prepare(
-        "SELECT id, name, slug FROM workspaces ORDER BY created_at DESC",
-      ).all<{ id: string; name: string; slug: string }>();
-      baseRows = all.results;
-    }
+    const managed = await env.DB.prepare(
+      `SELECT w.id, w.name, w.slug
+         FROM workspaces w
+         JOIN memberships m ON m.workspace_id = w.id
+        WHERE m.user_id = ? AND m.role = 'manager' AND w.is_demo = 0
+        ORDER BY w.created_at DESC`,
+    )
+      .bind(callerId)
+      .all<{ id: string; name: string; slug: string }>();
+    baseRows = managed.results;
   } catch {
     return json({
       workspaces: [],
@@ -151,6 +231,70 @@ async function handleOverview(env: Env, url: URL): Promise<Response> {
   return json({ workspaces, demoFallback } satisfies OverviewResponse);
 }
 
+/** Demo-mode overview keeps the old "fall back to all workspaces" convenience, scoped to is_demo = 1. */
+async function handleDemoOverview(env: Env, callerId: string): Promise<Response> {
+  let baseRows: Array<{ id: string; name: string; slug: string }>;
+  let demoFallback = false;
+  try {
+    const managed = await env.DB.prepare(
+      `SELECT w.id, w.name, w.slug
+         FROM workspaces w
+         JOIN memberships m ON m.workspace_id = w.id
+        WHERE m.user_id = ? AND m.role = 'manager' AND w.is_demo = 1
+        ORDER BY w.created_at DESC`,
+    )
+      .bind(callerId)
+      .all<{ id: string; name: string; slug: string }>();
+    if (managed.results.length > 0) {
+      baseRows = managed.results;
+    } else {
+      demoFallback = true;
+      const all = await env.DB.prepare(
+        "SELECT id, name, slug FROM workspaces WHERE is_demo = 1 ORDER BY created_at DESC",
+      ).all<{ id: string; name: string; slug: string }>();
+      baseRows = all.results;
+    }
+  } catch {
+    return json({ workspaces: [], demoFallback: true, note: "D1 not migrated" });
+  }
+
+  const workspaces: OverviewRow[] = await Promise.all(
+    baseRows.map(async (w): Promise<OverviewRow> => {
+      const internRow = await env.DB.prepare(
+        `SELECT u.id AS userId, u.display_name AS displayName
+           FROM memberships m
+           JOIN users u ON u.id = m.user_id
+          WHERE m.workspace_id = ? AND m.role = 'intern'
+          ORDER BY m.created_at ASC
+          LIMIT 1`,
+      )
+        .bind(w.id)
+        .first<{ userId: string; displayName: string }>();
+
+      let stats: WorkspaceSummaryStats = { activeTasks: 0, openBlockers: 0, latestUpdate: null };
+      try {
+        const stub = env.WORKSPACE_DO.get(env.WORKSPACE_DO.idFromName(w.id));
+        const res = await stub.fetch(`https://do.internal/api/workspace/${w.id}/summary`);
+        if (res.ok) stats = (await res.json()) as WorkspaceSummaryStats;
+      } catch {
+        // leave zeros
+      }
+
+      return {
+        id: w.id,
+        name: w.name,
+        slug: w.slug,
+        intern: internRow ? { userId: internRow.userId, displayName: internRow.displayName } : null,
+        activeTasks: stats.activeTasks,
+        openBlockers: stats.openBlockers,
+        latestUpdate: stats.latestUpdate,
+      };
+    }),
+  );
+
+  return json({ workspaces, demoFallback } satisfies OverviewResponse);
+}
+
 /**
  * Progress Agent endpoint. Goes through the SAME authorization boundary as
  * every other workspace route: a caller with no resolvable role is rejected.
@@ -160,28 +304,17 @@ async function handleOverview(env: Env, url: URL): Promise<Response> {
  */
 async function handleAgent(
   env: Env,
-  url: URL,
   request: Request,
   workspaceId: string,
+  caller: Caller,
 ): Promise<Response> {
-  const userId = url.searchParams.get("userId") || `anon-${crypto.randomUUID().slice(0, 8)}`;
-  const displayName = url.searchParams.get("displayName") || "Anonymous";
-  const role = await resolveRole(env, workspaceId, userId);
-
-  if (role === null) {
-    return json(
-      { error: "you are not a member of this workspace", code: "unauthorized" },
-      403,
-    );
-  }
-
   // wrangler's generated Env types the Agent namespace as untyped; re-attach the
   // concrete class so `agent.ask` / `agent.history` are visible.
   const agentNs = env.PROGRESS_AGENT as unknown as DurableObjectNamespace<ProgressAgent>;
   const agent = await getAgentByName<Env, ProgressAgent>(agentNs, workspaceId);
 
   if (request.method === "GET") {
-    return json({ turns: await agent.history(userId) });
+    return json({ turns: await agent.history(caller.userId) });
   }
 
   if (request.method === "POST") {
@@ -194,7 +327,13 @@ async function handleAgent(
     if (typeof prompt !== "string") {
       return json({ error: "prompt (string) is required", code: "empty_prompt" }, 400);
     }
-    const result = await agent.ask({ workspaceId, userId, displayName, role, prompt });
+    const result = await agent.ask({
+      workspaceId,
+      userId: caller.userId,
+      displayName: caller.displayName,
+      role: caller.role,
+      prompt,
+    });
     return json(result, "error" in result ? 422 : 200);
   }
 
@@ -203,24 +342,20 @@ async function handleAgent(
 
 // --- Phase 4B: reminders + weekly review (same authorization boundary) --------
 
-interface Caller {
-  userId: string;
-  displayName: string;
-  role: Role;
-}
-
 async function authWorkspace(
   env: Env,
+  request: Request,
   url: URL,
   workspaceId: string,
+  demoMode: boolean,
 ): Promise<Caller | Response> {
-  const userId = url.searchParams.get("userId") || `anon-${crypto.randomUUID().slice(0, 8)}`;
-  const displayName = url.searchParams.get("displayName") || "Anonymous";
-  const role = await resolveRole(env, workspaceId, userId);
+  const callerOrResponse = await resolveCaller(request, env, url, demoMode);
+  if (callerOrResponse instanceof Response) return callerOrResponse;
+  const role = await resolveRole(env, workspaceId, callerOrResponse.userId, demoMode);
   if (role === null) {
     return json({ error: "you are not a member of this workspace", code: "unauthorized" }, 403);
   }
-  return { userId, displayName, role };
+  return { ...callerOrResponse, role };
 }
 
 async function handleReminders(
@@ -237,6 +372,53 @@ async function handleReminders(
     if (!reminder) return json({ error: "reminder not found or not addressed to you", code: "not_found" }, 404);
     return json({ reminder });
   }
+  return json({ error: "not found" }, 404);
+}
+
+// --- Invitations (mentor/manager of THIS workspace, normal authWorkspace boundary) --
+
+async function handleWorkspaceInvitations(
+  env: Env,
+  request: Request,
+  workspaceId: string,
+  caller: Caller,
+  tail: string[],
+): Promise<Response> {
+  if (caller.role !== "mentor" && caller.role !== "manager") {
+    return json({ error: "only a mentor or manager can manage invitations", code: "forbidden" }, 403);
+  }
+
+  if (request.method === "GET" && tail.length === 0) {
+    return json({ invitations: await listWorkspaceInvitations(env, workspaceId) });
+  }
+
+  if (request.method === "POST" && tail.length === 0) {
+    const body = (await request.json().catch(() => ({}))) as { email?: unknown; role?: unknown };
+    const email = typeof body.email === "string" ? body.email.trim() : "";
+    const role = body.role;
+    if (!email.includes("@")) return json({ error: "a valid email is required", code: "bad_request" }, 400);
+    if (role !== "intern" && role !== "mentor" && role !== "manager") {
+      return json({ error: "role must be intern, mentor, or manager", code: "bad_request" }, 400);
+    }
+    const invitation = await createInvitation(env, {
+      workspaceId,
+      email,
+      role,
+      invitedByUserId: caller.userId,
+    });
+    return json({ invitation }, 201);
+  }
+
+  if (request.method === "POST" && tail.length === 2 && tail[1] === "revoke") {
+    const revoked = await revokeInvitation(env, {
+      invitationId: tail[0],
+      workspaceId,
+      actorUserId: caller.userId,
+    });
+    if (!revoked) return json({ error: "invitation not found or not pending", code: "not_found" }, 404);
+    return json({ invitation: revoked });
+  }
+
   return json({ error: "not found" }, 404);
 }
 
@@ -531,10 +713,20 @@ async function upsertUser(env: Env, input: { email: string; displayName: string 
     .first<{ id: string }>();
   if (existing) return existing.id;
   const id = crypto.randomUUID();
-  await env.DB.prepare("INSERT INTO users (id, email, display_name) VALUES (?, ?, ?)")
-    .bind(id, email, input.displayName.trim() || email)
+  const now = Date.now();
+  await env.DB.prepare(
+    "INSERT INTO users (id, email, display_name, account_status, platform_role, created_at, updated_at) VALUES (?, ?, ?, 'ACTIVE', 'USER', ?, ?)",
+  )
+    .bind(id, email, input.displayName.trim() || email, now, now)
     .run();
   return id;
+}
+
+async function findUserIdByEmail(env: Env, email: string): Promise<string | null> {
+  const row = await env.DB.prepare("SELECT id FROM users WHERE email = ?")
+    .bind(email.trim().toLowerCase())
+    .first<{ id: string }>();
+  return row?.id ?? null;
 }
 
 interface PersonInput {
@@ -555,12 +747,13 @@ function validatePerson(v: unknown, field: string): PersonInput {
 }
 
 /**
- * POST /api/workspaces — mentor/manager only. No membership exists yet (the
- * workspace doesn't exist), so the caller asserts their own role the same way
- * every other route accepts a pre-membership `devRole` claim; only mentor/manager
- * may create. D1 stays org-metadata-only — no workspace-local state is written here.
+ * DEMO workspace creation — unchanged from the pre-Access model. `devRole` is
+ * a self-asserted claim honoured ONLY here, because no membership can exist
+ * yet for a not-yet-created workspace, and ONLY within the demo sandbox
+ * (the created workspace is always is_demo = 1, so it can never be reached
+ * from a production route).
  */
-async function handleCreateWorkspace(env: Env, url: URL, request: Request): Promise<Response> {
+async function handleDemoCreateWorkspace(env: Env, url: URL, request: Request): Promise<Response> {
   const userId = url.searchParams.get("userId") || "";
   const devRole = url.searchParams.get("devRole");
   const callerRole: Role | null = DEV_ROLES.includes(devRole as Role) ? (devRole as Role) : null;
@@ -595,7 +788,7 @@ async function handleCreateWorkspace(env: Env, url: URL, request: Request): Prom
   const managerId = await upsertUser(env, manager);
 
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO workspaces (id, name, slug) VALUES (?, ?, ?)").bind(
+    env.DB.prepare("INSERT INTO workspaces (id, name, slug, is_demo) VALUES (?, ?, ?, 1)").bind(
       workspaceId,
       name,
       slug,
@@ -615,9 +808,112 @@ async function handleCreateWorkspace(env: Env, url: URL, request: Request): Prom
 }
 
 /**
- * POST /api/workspace/:id/members — mentor/manager of THIS workspace only
- * (normal authWorkspace boundary, unlike creation above).
+ * PRODUCTION workspace creation. The caller must be an authenticated, ACTIVE
+ * production user who declares whether they're creating as a mentor or a
+ * manager (`creatorRole`) — never as an intern (interns join via invitation
+ * only, per the onboarding model). The declared role must match the email
+ * the caller supplied in that same slot, so a caller can't grant a
+ * privileged role to somebody else's email while claiming a lesser role for
+ * themselves.
+ *
+ * For each of intern/mentor/manager: if a D1 user already exists for that
+ * email, membership is granted immediately; otherwise a PENDING invitation
+ * is created for them to accept on first login.
  */
+async function handleCreateWorkspace(env: Env, request: Request, creator: ProductionUser): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = (await request.json()) as Record<string, unknown>;
+  } catch {
+    return json({ error: "malformed JSON body", code: "bad_request" }, 400);
+  }
+
+  const creatorRole = body.creatorRole;
+  if (creatorRole !== "mentor" && creatorRole !== "manager") {
+    return json(
+      { error: "creatorRole must be 'mentor' or 'manager' — a new workspace cannot be self-created as intern", code: "bad_request" },
+      400,
+    );
+  }
+
+  const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : null;
+  let intern: PersonInput, mentor: PersonInput, manager: PersonInput;
+  try {
+    if (!name) throw new Error("name is required");
+    intern = validatePerson(body.intern, "intern");
+    mentor = validatePerson(body.mentor, "mentor");
+    manager = validatePerson(body.manager, "manager");
+  } catch (err) {
+    return json({ error: (err as Error).message, code: "bad_request" }, 400);
+  }
+
+  const creatorSlot = creatorRole === "mentor" ? mentor : manager;
+  if (creatorSlot.email.trim().toLowerCase() !== creator.email.toLowerCase()) {
+    return json(
+      {
+        error: `creatorRole is '${creatorRole}' but the ${creatorRole} email you provided doesn't match your own account email`,
+        code: "bad_request",
+      },
+      400,
+    );
+  }
+
+  const team = typeof body.team === "string" && body.team.trim() ? body.team.trim() : null;
+  const startDate = typeof body.startDate === "string" && body.startDate.trim() ? body.startDate.trim() : null;
+  const endDate = typeof body.endDate === "string" && body.endDate.trim() ? body.endDate.trim() : null;
+
+  const workspaceId = crypto.randomUUID();
+  const slug = slugify(name);
+
+  await env.DB.prepare(
+    "INSERT INTO workspaces (id, name, slug, is_demo, team, start_date, end_date) VALUES (?, ?, ?, 0, ?, ?, ?)",
+  )
+    .bind(workspaceId, name, slug, team, startDate, endDate)
+    .run();
+  await env.DB.prepare("INSERT INTO memberships (id, workspace_id, user_id, role) VALUES (?, ?, ?, ?)")
+    .bind(crypto.randomUUID(), workspaceId, creator.id, creatorRole)
+    .run();
+  await recordAudit(env, {
+    actorUserId: creator.id,
+    action: "WORKSPACE_CREATED",
+    targetType: "workspace",
+    targetId: workspaceId,
+    workspaceId,
+    metadata: { name, creatorRole },
+  });
+
+  const slots: Array<{ role: Role; person: PersonInput }> = [
+    { role: "intern", person: intern },
+    { role: "mentor", person: mentor },
+    { role: "manager", person: manager },
+  ];
+  const invited: Array<{ email: string; role: Role }> = [];
+  for (const slot of slots) {
+    const email = slot.person.email.trim().toLowerCase();
+    if (email === creator.email.toLowerCase()) continue; // creator already added above
+    const existingUserId = await findUserIdByEmail(env, email);
+    if (existingUserId) {
+      await env.DB.prepare("INSERT INTO memberships (id, workspace_id, user_id, role) VALUES (?, ?, ?, ?)")
+        .bind(crypto.randomUUID(), workspaceId, existingUserId, slot.role)
+        .run();
+      await recordAudit(env, {
+        actorUserId: creator.id,
+        action: "MEMBERSHIP_ADDED",
+        targetType: "membership",
+        targetId: existingUserId,
+        workspaceId,
+        metadata: { role: slot.role, via: "workspace_creation" },
+      });
+    } else {
+      await createInvitation(env, { workspaceId, email, role: slot.role, invitedByUserId: creator.id });
+      invited.push({ email, role: slot.role });
+    }
+  }
+
+  return json({ workspace: { id: workspaceId, name, slug }, invited }, 201);
+}
+
+/** DEMO member add — unchanged, scoped to an is_demo workspace by the caller. */
 async function handleAddMember(
   env: Env,
   request: Request,
@@ -662,6 +958,217 @@ async function handleAddMember(
   return json({ member: { userId, displayName: person.displayName, role } }, 201);
 }
 
+/**
+ * GET /api/me — production only. Resolves who the caller is, what workspace
+ * memberships and pending invitations they have, and platform-admin status.
+ * The client uses this to route first-login onboarding vs. the dashboard.
+ */
+async function handleMe(env: Env, user: ProductionUser): Promise<Response> {
+  const { results: memberships } = await env.DB.prepare(
+    `SELECT w.id AS workspaceId, w.name AS workspaceName, w.slug, m.role
+       FROM memberships m
+       JOIN workspaces w ON w.id = m.workspace_id
+      WHERE m.user_id = ? AND w.is_demo = 0
+      ORDER BY m.created_at ASC`,
+  )
+    .bind(user.id)
+    .all();
+  const pendingInvitations = await listPendingInvitationsForEmailEnriched(env, user.email);
+
+  return json({
+    user: {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      accountStatus: user.accountStatus,
+      isAdmin: user.platformRole === "ADMIN",
+    },
+    memberships,
+    pendingInvitations,
+  });
+}
+
+/** PATCH /api/me — self-service display name update only (email/identity are Access-owned). */
+async function handleUpdateMe(env: Env, request: Request, user: ProductionUser): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { displayName?: unknown };
+  if (typeof body.displayName !== "string" || !body.displayName.trim()) {
+    return json({ error: "displayName (non-empty string) is required", code: "bad_request" }, 400);
+  }
+  const updated = await updateDisplayName(env, user.id, body.displayName);
+  if (!updated) return json({ error: "update failed", code: "bad_request" }, 400);
+  return json({
+    user: {
+      id: updated.id,
+      email: updated.email,
+      displayName: updated.displayName,
+      accountStatus: updated.accountStatus,
+      isAdmin: updated.platformRole === "ADMIN",
+    },
+  });
+}
+
+async function handleAcceptInvitation(env: Env, request: Request, user: ProductionUser, invitationId: string): Promise<Response> {
+  if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+  const result = await acceptInvitation(env, { invitationId, user });
+  if (!result.ok) {
+    const status = result.code === "not_found" ? 404 : result.code === "email_mismatch" ? 403 : 409;
+    return json({ error: `invitation ${result.code.replace("_", " ")}`, code: result.code }, status);
+  }
+  return json({ invitation: result.invitation, membershipCreated: result.membershipCreated });
+}
+
+async function routeApi(request: Request, env: Env, url: URL, pathname: string, demoMode: boolean): Promise<Response> {
+  if (pathname === "/api/workspaces" && request.method === "GET") {
+    try {
+      if (demoMode) {
+        const { results } = await env.DB.prepare(
+          "SELECT id, name, slug, created_at AS createdAt FROM workspaces WHERE is_demo = 1 ORDER BY created_at DESC",
+        ).all();
+        return json({ workspaces: results });
+      }
+      const userOrResponse = await requireProductionUser(request, env);
+      if (userOrResponse instanceof Response) return userOrResponse;
+      const { results } = await env.DB.prepare(
+        `SELECT w.id, w.name, w.slug, w.created_at AS createdAt
+           FROM workspaces w
+           JOIN memberships m ON m.workspace_id = w.id
+          WHERE m.user_id = ? AND w.is_demo = 0
+          ORDER BY w.created_at DESC`,
+      )
+        .bind(userOrResponse.id)
+        .all();
+      return json({ workspaces: results });
+    } catch {
+      return json({ workspaces: [], note: "D1 not migrated yet — run `npm run db:migrate:local`" });
+    }
+  }
+
+  if (pathname === "/api/workspaces" && request.method === "POST") {
+    if (demoMode) return handleDemoCreateWorkspace(env, url, request);
+    const userOrResponse = await requireProductionUser(request, env);
+    if (userOrResponse instanceof Response) return userOrResponse;
+    return handleCreateWorkspace(env, request, userOrResponse);
+  }
+
+  if (pathname === "/api/overview" && request.method === "GET") {
+    const callerOrResponse = await resolveCaller(request, env, url, demoMode);
+    if (callerOrResponse instanceof Response) return callerOrResponse;
+    return demoMode ? handleDemoOverview(env, callerOrResponse.userId) : handleOverview(env, callerOrResponse.userId);
+  }
+
+  if (pathname === "/api/me" && request.method === "GET") {
+    if (demoMode) return json({ error: "not available in demo mode", code: "not_found" }, 404);
+    const userOrResponse = await requireProductionUser(request, env);
+    if (userOrResponse instanceof Response) return userOrResponse;
+    return handleMe(env, userOrResponse);
+  }
+
+  if (pathname === "/api/me" && request.method === "PATCH") {
+    if (demoMode) return json({ error: "not available in demo mode", code: "not_found" }, 404);
+    const userOrResponse = await requireProductionUser(request, env);
+    if (userOrResponse instanceof Response) return userOrResponse;
+    return handleUpdateMe(env, request, userOrResponse);
+  }
+
+  if (pathname.match(/^\/api\/invitations\/[^/]+\/accept$/) && !demoMode) {
+    const userOrResponse = await requireProductionUser(request, env);
+    if (userOrResponse instanceof Response) return userOrResponse;
+    const invitationId = decodeURIComponent(pathname.split("/")[3]);
+    return handleAcceptInvitation(env, request, userOrResponse, invitationId);
+  }
+
+  if (pathname.startsWith("/api/admin/") && !demoMode) {
+    const userOrResponse = await requireProductionUser(request, env);
+    if (userOrResponse instanceof Response) return userOrResponse;
+    if (userOrResponse.platformRole !== "ADMIN") {
+      return json({ error: "platform admin only", code: "forbidden" }, 403);
+    }
+    const tail = pathname.replace(/^\/api\/admin\//, "").split("/").filter(Boolean);
+    return handleAdminRoute(env, request, url, tail, userOrResponse);
+  }
+
+  // Phase 4B: reminders + weekly review + invitations (nested paths). Members: add-only.
+  const p4b = pathname.match(/^\/api\/workspace\/([^/]+)\/(reminders|weekly|attachments|members|invitations)(\/[^?]*)?$/);
+  if (p4b) {
+    const workspaceId = decodeURIComponent(p4b[1]);
+    if (!WORKSPACE_ID_RE.test(workspaceId)) {
+      return json({ error: "invalid workspace id" }, 400);
+    }
+    const caller = await authWorkspace(env, request, url, workspaceId, demoMode);
+    if (caller instanceof Response) return caller;
+    const stub = env.WORKSPACE_DO.get(env.WORKSPACE_DO.idFromName(workspaceId));
+    const tail = (p4b[3] ?? "").split("/").filter(Boolean);
+    if (p4b[2] === "reminders") return handleReminders(stub, request, caller, tail);
+    if (p4b[2] === "attachments") {
+      return handleAttachments(env, url, request, workspaceId, stub, caller, tail);
+    }
+    if (p4b[2] === "invitations") {
+      if (demoMode) return json({ error: "not found" }, 404);
+      return handleWorkspaceInvitations(env, request, workspaceId, caller, tail);
+    }
+    if (p4b[2] === "members") {
+      if (request.method !== "POST" || tail.length !== 0) return json({ error: "not found" }, 404);
+      return handleAddMember(env, request, workspaceId, caller);
+    }
+    return handleWeekly(env, stub, request, workspaceId, caller, tail);
+  }
+
+  // Workspace routes: HTTP (snapshot/summary/agent) + WebSocket.
+  const match = pathname.match(/^\/api\/workspace\/([^/]+)\/(ws|snapshot|summary|agent)$/);
+  if (match) {
+    const workspaceId = decodeURIComponent(match[1]);
+    if (!WORKSPACE_ID_RE.test(workspaceId)) {
+      return json({ error: "invalid workspace id" }, 400);
+    }
+
+    const stub = env.WORKSPACE_DO.get(env.WORKSPACE_DO.idFromName(workspaceId));
+
+    // `summary` needs no identity (aggregate counts only), but must still stay
+    // within the caller's mode (demo vs production) to avoid cross-namespace probing.
+    if (match[2] === "summary") {
+      const isDemo = await workspaceIsDemo(env, workspaceId);
+      if (isDemo === null || isDemo !== demoMode) return json({ error: "not found" }, 404);
+      // The DO parses its own workspace id from the request path (workspaceIdFrom);
+      // it only recognizes the canonical /api/workspace/:id/... shape, so a demo
+      // request's raw /api/demo/workspace/:id/... path must be rewritten to that
+      // canonical form before forwarding — otherwise the DO silently resolves an
+      // empty workspace id (see the identical fix below for ws/snapshot).
+      const summaryUrl = new URL(request.url);
+      summaryUrl.pathname = pathname;
+      return stub.fetch(new Request(summaryUrl.toString(), request));
+    }
+
+    const callerOrResponse = await resolveCaller(request, env, url, demoMode);
+    if (callerOrResponse instanceof Response) return callerOrResponse;
+    const role = await resolveRole(env, workspaceId, callerOrResponse.userId, demoMode);
+
+    // No membership => no access at all, for reads (snapshot) as well as
+    // realtime (ws). Never forward an unmapped identity into the DO.
+    if (role === null) {
+      return json({ error: "you are not a member of this workspace", code: "unauthorized" }, 403);
+    }
+
+    if (match[2] === "agent") {
+      return handleAgent(env, request, workspaceId, { ...callerOrResponse, role });
+    }
+
+    // Attach a Worker-authoritative identity the DO can trust; the DO never
+    // re-derives identity or accepts a raw client-supplied fallback. Also
+    // rewrite the path to the canonical (non-/demo-prefixed) form the DO's
+    // own workspaceIdFrom() parser expects — see the comment on the summary
+    // route above for why this matters.
+    const doUrl = new URL(request.url);
+    doUrl.pathname = pathname;
+    doUrl.searchParams.set("_uid", callerOrResponse.userId);
+    doUrl.searchParams.set("_name", callerOrResponse.displayName);
+    doUrl.searchParams.set("_role", role);
+
+    return stub.fetch(new Request(doUrl.toString(), request));
+  }
+
+  return json({ error: "not found" }, 404);
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -678,88 +1185,13 @@ export default {
       return json({ ok: true, service: "internpulse", time: Date.now(), d1 } satisfies HealthResponse);
     }
 
-    if (pathname === "/api/workspaces" && request.method === "GET") {
-      try {
-        const { results } = await env.DB.prepare(
-          "SELECT id, name, slug, created_at AS createdAt FROM workspaces ORDER BY created_at DESC",
-        ).all();
-        return json({ workspaces: results });
-      } catch {
-        return json({ workspaces: [], note: "D1 not migrated yet — run `npm run db:migrate:local`" });
-      }
-    }
-
-    if (pathname === "/api/workspaces" && request.method === "POST") {
-      return handleCreateWorkspace(env, url, request);
-    }
-
-    if (pathname === "/api/overview" && request.method === "GET") {
-      return handleOverview(env, url);
-    }
-
-    // Phase 4B: reminders + weekly review (nested paths). Members: add-only.
-    const p4b = pathname.match(/^\/api\/workspace\/([^/]+)\/(reminders|weekly|attachments|members)(\/[^?]*)?$/);
-    if (p4b) {
-      const workspaceId = decodeURIComponent(p4b[1]);
-      if (!WORKSPACE_ID_RE.test(workspaceId)) {
-        return json({ error: "invalid workspace id" }, 400);
-      }
-      const caller = await authWorkspace(env, url, workspaceId);
-      if (caller instanceof Response) return caller;
-      const stub = env.WORKSPACE_DO.get(env.WORKSPACE_DO.idFromName(workspaceId));
-      const tail = (p4b[3] ?? "").split("/").filter(Boolean);
-      if (p4b[2] === "reminders") return handleReminders(stub, request, caller, tail);
-      if (p4b[2] === "attachments") {
-        return handleAttachments(env, url, request, workspaceId, stub, caller, tail);
-      }
-      if (p4b[2] === "members") {
-        if (request.method !== "POST" || tail.length !== 0) return json({ error: "not found" }, 404);
-        return handleAddMember(env, request, workspaceId, caller);
-      }
-      return handleWeekly(env, stub, request, workspaceId, caller, tail);
-    }
-
-    // Workspace routes: HTTP (snapshot/summary/agent) + WebSocket.
-    const match = pathname.match(/^\/api\/workspace\/([^/]+)\/(ws|snapshot|summary|agent)$/);
-    if (match) {
-      const workspaceId = decodeURIComponent(match[1]);
-      if (!WORKSPACE_ID_RE.test(workspaceId)) {
-        return json({ error: "invalid workspace id" }, 400);
-      }
-
-      // Progress Agent: same authorization boundary as the rest of the workspace.
-      if (match[2] === "agent") {
-        return handleAgent(env, url, request, workspaceId);
-      }
-
-      const stub = env.WORKSPACE_DO.get(env.WORKSPACE_DO.idFromName(workspaceId));
-
-      // For realtime + snapshot, attach a Worker-authoritative identity the DO
-      // can trust. `summary` needs no identity (aggregate counts only).
-      if (match[2] === "summary") {
-        return stub.fetch(request);
-      }
-
-      const userId = url.searchParams.get("userId") || `anon-${crypto.randomUUID().slice(0, 8)}`;
-      const displayName = url.searchParams.get("displayName") || "Anonymous";
-      const role = await resolveRole(env, workspaceId, userId);
-
-      // No membership => no access at all, for reads (snapshot) as well as
-      // realtime (ws). Never forward an unmapped identity into the DO.
-      if (role === null) {
-        return json({ error: "you are not a member of this workspace", code: "unauthorized" }, 403);
-      }
-
-      const doUrl = new URL(request.url);
-      doUrl.searchParams.set("_uid", userId);
-      doUrl.searchParams.set("_name", displayName);
-      doUrl.searchParams.set("_role", role);
-
-      return stub.fetch(new Request(doUrl.toString(), request));
+    if (pathname.startsWith("/api/demo/")) {
+      const rewritten = "/api/" + pathname.slice("/api/demo/".length);
+      return routeApi(request, env, url, rewritten, true);
     }
 
     if (pathname.startsWith("/api/")) {
-      return json({ error: "not found" }, 404);
+      return routeApi(request, env, url, pathname, false);
     }
 
     // Non-API paths are served by the Workers assets runtime (the React SPA).

@@ -1,5 +1,16 @@
 # Copy to `.dev.vars` for local development. `.dev.vars` is gitignored.
 #
+# --- Production authentication (Cloudflare Access) ---
+#
+# Leave both unset for local dev if you only want to exercise /api/demo/*.
+# Once set, every non-demo route requires a verified Access JWT — see README
+# "Cloudflare Access setup" for how to provision these in the dashboard.
+# ACCESS_TEAM_DOMAIN="yourteam.cloudflareaccess.com"
+# ACCESS_AUD="<Application Audience (AUD) tag from the Access application>"
+#
+# Comma-separated emails granted platform_role=ADMIN on their first login.
+# ADMIN_EMAILS="you@example.com"
+#
 # --- Phase 3: Progress Agent / Workers AI ---
 #
 # Workers AI has no offline local runtime. `wrangler dev` proxies env.AI to the

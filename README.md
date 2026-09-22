@@ -77,7 +77,15 @@ intern progress, mentor guidance, and manager visibility.
 
 ## Roles
 
-Three roles, resolved once per request at **`resolveRole()`** in `src/worker/index.ts` — the single authorization seam.
+Three **workspace** roles, resolved once per request at **`resolveRole()`** in
+`src/worker/index.ts` — the single authorization seam, reading D1 `memberships`.
+A user's role can differ per workspace (e.g. mentor in one, manager in another).
+
+There is also a separate **platform** role, `platform_role` on the `users`
+table: `USER` (default) or `ADMIN`. Platform admin is operational/support
+authority (user/account/membership repair, audit visibility) — it is *not*
+"manager of every workspace" and is never granted from a client-supplied
+value. See [Production authentication](#production-authentication-cloudflare-access) below.
 
 | Action | intern | mentor | manager | no membership |
 |---|:--:|:--:|:--:|:--:|
@@ -105,6 +113,56 @@ The Progress Agent is **read / reason / suggest / draft only** for all roles —
 
 ---
 
+## Production UI
+
+The production app (everything except `#/demo`) is a Tailwind-based SaaS
+shell built on top of the same realtime backend as the demo, gated entirely
+by [Production authentication](#production-authentication-cloudflare-access):
+
+- **First login → onboarding.** `GET /api/me` drives one of: role-aware home
+  (memberships exist), a pending-invitations screen (invited but not yet a
+  member), or a "set up a new workspace" screen (neither) — never a
+  self-service role picker. See `src/client/auth/decisions.ts`.
+- **Invitations.** Each pending invite shows workspace, role, inviter, and
+  expiry; accepting calls `POST /api/invitations/:id/accept` and re-fetches
+  `/api/me`. Errors (wrong email, expired, revoked, already accepted) are
+  shown as plain text, never a raw JSON dump.
+- **Create workspace.** Mentor/manager only, never intern — the creator
+  declares `creatorRole` and it's validated server-side against their own
+  verified email in that slot (see `handleCreateWorkspace`). Unmatched
+  intern/mentor/manager emails become invitations, not instantly-provisioned
+  accounts.
+- **Role-aware homes.** Intern/Mentor/Manager homes (`src/client/home/`)
+  aggregate each membership's live snapshot (same "fan out and read" pattern
+  the Worker's own `/api/overview` already used) and render the
+  server-computed `attentionItems` grouped by reason — no duplicated
+  attention logic on the client.
+- **Global shell.** Sidebar (Home / workspaces / Mentions / Weekly Reviews /
+  Files / Progress Agent / Settings / Admin-if-admin), top bar (workspace
+  switcher, profile menu with sign-out via `/cdn-cgi/access/logout`),
+  responsive down to a mobile drawer.
+- **Workspace settings.** Members, pending invitations (invite/revoke) for
+  the workspace's own mentor/manager; removing a member or changing an
+  existing member's role is intentionally admin-only for now (see
+  [Known remaining gaps](#known-demo-limitations)) — the UI never invents an
+  authorization boundary the backend doesn't enforce.
+- **Admin (`/admin`, `#/admin`).** Users, workspaces/memberships, invitations,
+  audit log, basic health — thin wrappers over the existing admin API, with
+  confirmation dialogs on every destructive action. Hidden from the sidebar
+  and hard-blocked server-side for non-admins, including managers.
+- **Demo stays structurally separate.** `src/client/demo/DemoApp.tsx` and
+  `src/client/production/ProductionApp.tsx` are two independent component
+  trees; `src/client/Root.tsx` picks one purely from whether the hash starts
+  with `#/demo`. Production code never imports demo identity state.
+
+Not yet built (explicitly deferred, not silently dropped — see the
+productionization report for the full list): live @mention autocomplete
+while typing, a global cross-workspace "Files" aggregator (Files/Agent
+sidebar links jump into your first workspace's tab instead), and persisted
+notification preferences (deliberately deferred per the locked decisions).
+
+---
+
 ## Screenshots
 
 _No screenshots are checked in yet._ Placeholders — capture from the live demo:
@@ -114,6 +172,98 @@ _No screenshots are checked in yet._ Placeholders — capture from the live demo
 - `docs/screenshots/agent.png` — Progress Agent with grounding panel
 - `docs/screenshots/weekly.png` — weekly review lifecycle
 - `docs/screenshots/manager.png` — manager overview
+
+---
+
+## Production authentication (Cloudflare Access)
+
+InternPulse's real identity/session layer is **Cloudflare Access** — it never
+implements its own password storage, login form, or session cookie. Access
+answers *"who is this authenticated person?"*; D1 answers *"what InternPulse
+user/role/workspace access do they have?"*. See `src/worker/access-auth.ts`
+for the exact verification and the module comments throughout
+`src/worker/*.ts` for the full identity model this pass introduced.
+
+### Two identity paths, deliberately separate
+
+| | Path | Identity source | Data |
+|---|---|---|---|
+| Production | any `/api/*` route not under `/api/demo/` | verified Cloudflare Access JWT (`Cf-Access-Jwt-Assertion` header), cryptographically checked — see below | real workspaces (`is_demo = 0`) |
+| Demo | `/api/demo/*` | the old unauthenticated `userId`/`displayName`/`devRole` query params (unchanged, for reviewers) | demo-seeded workspaces only (`is_demo = 1`) |
+
+A workspace's `is_demo` flag is checked on **every** route in both directions:
+a production request can never reach a demo workspace, and a demo request can
+never reach a real one — even if it somehow knew the id. Set `DEMO_MODE=off`
+to disable `/api/demo/*` entirely in a deployment that should never expose
+sample data.
+
+### How the JWT is verified
+
+`getAuthenticatedIdentity(request, env)` in `src/worker/access-auth.ts`:
+
+1. reads `Cf-Access-Jwt-Assertion` from the request (Access injects this
+   header for both ordinary requests and WebSocket upgrades, once your
+   hostname is behind an Access application and the browser has an Access
+   session cookie — the browser WebSocket API can't set custom headers, but
+   it doesn't need to here);
+2. verifies the signature against your Access team's JWKS
+   (`https://<team>/cdn-cgi/access/certs`, fetched via `jose`'s
+   `createRemoteJWKSet`, cached);
+3. checks `iss` against `https://<ACCESS_TEAM_DOMAIN>` and `aud` against
+   `ACCESS_AUD`, and rejects an expired token;
+4. returns `{ subject, email, name?, identityProvider? }` — or throws
+   `AccessAuthError`, which every route maps to `401`.
+
+Nothing downstream (D1, `resolveRole`, `canMutate`, the `WorkspaceDO`) ever
+sees or trusts a client-supplied `userId`/`role`/`displayName` on a production
+route. `resolveProductionUser()` in `src/worker/production-identity.ts` then
+upserts/looks up the D1 `users` row for that verified identity (linking a
+pre-existing row by email on first login rather than duplicating it), and
+`platform_role`/`account_status` gate further access from there.
+
+### Dashboard setup required (not done by this repo — see [Deployment checkpoint](#deployment-checkpoint))
+
+1. **Zero Trust → Access → Applications → Add an application** (Self-hosted),
+   pointing at your Worker's production hostname.
+2. Add an **Access policy** (e.g. "Allow" for your organization's identity
+   provider — Google Workspace, GitHub, one-time PIN, etc.) — configure the
+   identity provider under **Settings → Authentication** first if needed.
+3. Copy the application's **Audience (AUD) tag** from the application's
+   Overview page.
+4. Note your **team domain** (`<team-name>.cloudflareaccess.com`, or a custom
+   domain if configured under **Settings → Custom Pages/Domains**).
+5. Set on the Worker (`wrangler secret put` or `.dev.vars` locally — see
+   `.dev.vars.example`):
+   - `ACCESS_TEAM_DOMAIN` — your team domain (not secret, but Worker-specific)
+   - `ACCESS_AUD` — the Application AUD tag (not secret)
+   - `ADMIN_EMAILS` — comma-separated emails to bootstrap as platform `ADMIN`
+     on their first login (see below)
+
+None of `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD` / `ADMIN_EMAILS` are secrets in
+the credential sense (they don't grant access on their own — Access still
+enforces its own policy at the edge), but treat `ADMIN_EMAILS` as sensitive
+configuration; prefer `wrangler secret put ADMIN_EMAILS` over committing it.
+**Never commit an actual Access service-token secret or API token.**
+
+### Platform admin bootstrap
+
+There is no default/shared admin account. The **first** time a verified
+identity whose email is in `ADMIN_EMAILS` logs in, their newly-created D1 user
+row gets `platform_role = 'ADMIN'` (see `isBootstrapAdmin()` in
+`production-identity.ts`). This is **not** retroactive — removing or adding an
+email to `ADMIN_EMAILS` later doesn't change an existing user's role; use the
+admin API (`POST /api/admin/users/:id/suspend|activate|disable`) or a
+deliberate D1 update for that. Admin routes live under `/api/admin/*` and
+require `platform_role === 'ADMIN'`, checked server-side on every request —
+see `src/worker/admin-routes.ts`.
+
+### Account status
+
+`users.account_status` is `ACTIVE` (default), `SUSPENDED`, or `DISABLED`.
+InternPulse does **not** implement password reset — that happens at the
+Access/IdP layer. A non-`ACTIVE` account is denied every production route
+(`403 account_suspended` / `403 account_disabled`) before any workspace
+authorization is even considered; only a platform admin can restore `ACTIVE`.
 
 ---
 
@@ -132,9 +282,36 @@ npm run dev                         # http://localhost:5173
 npm run demo:seed                   # (in another shell, once dev is up) populate the demo workspace
 ```
 
-Open the app → use the **demo identity switcher** (top-right) to become Alice
-Chen (intern), Mia Rivera (mentor), or Jordan Park (manager). Open the same
-workspace in a second browser to see realtime sync.
+Without `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` set (the default local config),
+every production (`/api/*` outside `/api/demo/`) route fails closed with
+`401` — this is intentional, not a bug. The production UI (see
+[Production UI](#production-ui) below) will show the "sign-in required"
+screen in that case, since there's no way to satisfy a real Cloudflare Access
+check from local dev — Access sits in front of a deployed hostname, not
+`wrangler dev`/`vite dev`. **This is the deliberate local-dev limitation**:
+build and iterate on production screens against `/api/demo/*` data (the demo
+identities exercise the exact same components — see PART 24 of the
+productionization spec), and verify the real Access-authenticated path with
+the [manual checklist](docs/real-access-manual-checklist.md) after deploying.
+There is no "trust this header locally" bypass anywhere in the code.
+
+To use the demo experience: open the app, click into **`#/demo`** (or follow
+the link from the production sign-in screen), and use the **demo identity
+switcher** to become Alice Chen (intern), Mia Rivera (mentor), or Jordan Park
+(manager). It's visually marked `DEMO MODE` and talks only to `/api/demo/*`,
+which the Worker restricts to `is_demo=1` seed workspaces — it structurally
+cannot reach real workspace data, and the production app never imports demo
+identity state. Open the same demo workspace in a second browser to see
+realtime sync.
+
+If your account's production hostname is itself behind Cloudflare Access
+(true once you've completed the dashboard setup above), `wrangler dev`'s
+remote-binding proxy for Workers AI/Vectorize will fail to authenticate in a
+non-interactive shell. Run `wrangler dev --local` (Workers AI/Vectorize
+become unavailable locally, everything else — D1, DO, R2, and all auth
+logic — still works) or provide an Access Service Token
+(`CLOUDFLARE_ACCESS_CLIENT_ID`/`CLOUDFLARE_ACCESS_CLIENT_SECRET`) if you need
+full remote bindings locally.
 
 ### Environment variables
 
@@ -213,11 +390,25 @@ workflow 7/7; weekly workflow 23/23; AI-unavailable 7/7; RAG + documents pass
 (subject to Vectorize's ~30–90s async indexing).
 
 `npm run test` (vitest) covers the permission matrix, @mention parsing, the
-attention engine, and the workspace-socket reconnect/backoff state machine.
-`npm run load-test -- <N>` and `node scripts/qa-adversarial.mjs` are local-only
-(`wrangler dev`) tools — an authorization/leak/concurrency/input-robustness
-suite and a concurrent-client load test. Neither should be pointed at the
-live deployment.
+attention engine, the workspace-socket reconnect/backoff state machine, the
+production-auth layer (JWT verification, D1 user resolution, invitations,
+admin routes — real SQLite via `node:sqlite`, not a hand-rolled mock), and
+the frontend's pure decision logic: the auth state machine
+(`deriveAuthState`), onboarding routing (`deriveOnboardingStage`,
+`deriveHomeRole`), the production router (`parseProductionHash`), attention
+grouping, and invitation error mapping. Component rendering isn't
+covered by an automated DOM test suite (no jsdom/Testing Library in this
+repo) — verify UI screens locally against `/api/demo/*` and with the
+[manual real-Access checklist](docs/real-access-manual-checklist.md) after
+deploying.
+
+`npm run load-test -- <N>`, `node scripts/qa-adversarial.mjs`, and
+`node scripts/qa-production-auth.mjs` are local-only (`wrangler dev`) tools —
+a concurrent-client load test, an authorization/leak/concurrency/input
+suite (demo scope), and a production-auth adversarial suite (missing/forged/
+malformed Access headers, spoofed identity query params, demo/production
+scope isolation in both directions, WS auth rejection). None should be
+pointed at the live deployment.
 
 `npm run test:prod-smoke` is a **targeted production smoke test, not a load
 test**: it opens a real WS connection as a seeded member, confirms a
@@ -266,14 +457,43 @@ enable R2 in the dashboard, then `wrangler r2 bucket create internpulse-attachme
 - **Documents use `env.AI.toMarkdown`** (a platform utility) plus plain-text
   reading — no PDF/DOCX parser dependency, so document handling can't dominate
   the bundle. Unsupported files are still stored and downloadable.
-- **Demo identity is not authentication.** It's centralised and clearly labelled;
-  `resolveRole()` is the single seam a real provider replaces.
+- **Demo identity is not authentication.** It's centralised, clearly labelled,
+  and structurally isolated behind `#/demo` (`src/client/demo/DemoApp.tsx`) —
+  the production app (`src/client/production/ProductionApp.tsx`) never
+  imports it. Production identity comes from Cloudflare Access; see
+  [Production authentication](#production-authentication-cloudflare-access).
+- **Tailwind CSS**, adopted via the official `@tailwindcss/vite` plugin, with a
+  small semantic token set (`src/client/styles/app.css`) rather than a large
+  generic palette. shadcn/Radix was deliberately not adopted wholesale — the
+  UI is hand-built utility-first components; a Radix primitive would only be
+  reached for later if a specific accessibility-heavy control (e.g. a complex
+  combobox) genuinely needed it.
 
-## Known demo limitations
+## Known limitations
 
-- **Demo authentication only.** The browser picks who it is (`userId` /
-  `displayName`); an unassigned identity chooses a role via a dev selector. This
-  is explicit in the UI and code. Do not treat it as production auth.
+- **Removing a member or changing an existing member's role is admin-only.**
+  A workspace's own mentor/manager can invite, resend, and revoke pending
+  invitations (`src/worker/invitations.ts`), but the backend only exposes
+  member removal/role-repair through the platform-admin API
+  (`src/worker/admin-routes.ts`). The UI reflects this honestly rather than
+  inventing a mentor/manager-scoped mutation the backend doesn't enforce —
+  extending that authorization boundary is a deliberate follow-up decision,
+  not an oversight.
+- **No live @mention autocomplete while typing** — mentions still work
+  end-to-end (parsing, delivery, the attention/mentions surfaces), just
+  without a suggestion dropdown as you type `@`.
+- **No global "Files" or cross-workspace aggregation page** — the sidebar's
+  Files/Progress Agent links jump into your first workspace's tab; open a
+  specific workspace to use its own Attachments/Agent tab for other projects.
+- **No component-level DOM test suite** (no jsdom/Testing Library dependency
+  in this repo yet) — UI logic that was safe to extract as pure functions
+  (auth state, onboarding routing, the router, attention grouping, invitation
+  error mapping) has unit tests; rendered screens are verified manually
+  against `/api/demo/*` and via the
+  [manual real-Access checklist](docs/real-access-manual-checklist.md).
+- **No invitation email delivery** — an invitee discovers a pending invite by
+  logging in and checking `/api/me`; tell them out-of-band for now (locked
+  decision, not a bug).
 - **Attachments off in the current production deployment** until R2 is enabled
   (works locally and once the bucket exists).
 - **Vectorize indexing is asynchronous** (~30–90s). A brand-new update or
@@ -303,11 +523,18 @@ see **[`docs/NEW_USER_TESTING_MANUAL.md`](./docs/NEW_USER_TESTING_MANUAL.md)**.
 
 ```
 migrations/0001_init.sql          D1 schema (users/teams/workspaces/memberships)
+migrations/0002_production_auth.sql  access_subject/account_status/platform_role, invitations, audit_events, is_demo
 seed/dev-seed.sql                 org data for the demo (Alice / Mia / Jordan)
 scripts/demo-seed.mjs             populates a workspace DO with the demo story  (npm run demo:seed)
+docs/real-access-manual-checklist.md  post-deploy manual checklist against a real Access session
 
 src/shared/protocol.ts            all types shared by client / Worker / DO / Agent / Workflows
-src/worker/index.ts               routes, the resolveRole auth seam, overview fan-out, queue() dispatch
+src/worker/index.ts               routes, production/demo split, resolveRole auth seam, overview fan-out
+src/worker/access-auth.ts         Cloudflare Access JWT verification (JWKS, issuer/audience/expiry)
+src/worker/production-identity.ts D1 user resolution/linking, admin bootstrap, account status
+src/worker/invitations.ts         create/accept/revoke/list workspace invitations
+src/worker/admin-routes.ts        platform-admin operational endpoints (users/memberships/invites/audit)
+src/worker/audit.ts               append-only security/admin audit log
 src/worker/workspace-do.ts        WorkspaceDO: transport, validation, broadcast, snapshot, RPC surface
 src/worker/workspace-store.ts     DO SQLite schema + migrations (v1→v4) + typed CRUD (no ORM)
 src/worker/permissions.ts         the role matrix (canMutate)
@@ -319,5 +546,18 @@ src/worker/queue-consumer.ts      history/document indexing + workflow-start con
 src/worker/blocker-workflow.ts    BlockerWorkflow (reminder → escalation)
 src/worker/weekly-workflow.ts     WeeklyReviewWorkflow (draft → submit → review loop)
 src/worker/reminders.ts           deterministic reminder / weekly-draft text; isoWeek()
-src/client/                       React SPA: identity, useWorkspace hook, components/, tabs/, board/
+
+src/client/Root.tsx               picks DemoApp vs. ProductionApp purely from the #/demo hash prefix
+src/client/router.ts              hand-rolled production router (parse/build hash routes)
+src/client/auth/                  AuthProvider/AuthGate (the 8-state session machine) + pure decisions
+src/client/production/            ProductionApp: routes onboarding/invitations/home/workspace/admin/settings
+src/client/demo/                  DemoApp: the pre-existing identity-switcher experience, fully isolated
+src/client/home/                  role-aware Intern/Mentor/Manager homes + cross-workspace Mentions/Weekly pages
+src/client/onboarding/            welcome, invitation acceptance, create-workspace screens
+src/client/workspace/             WorkspaceView (shared by demo + production) + WorkspaceSettings
+src/client/shell/                 Sidebar, Topbar, ProfileMenu, WorkspaceSwitcher
+src/client/admin/                 /admin: users, workspaces/memberships, invitations, audit, health
+src/client/settings/              profile/settings screen
+src/client/ui/                    small shared Tailwind primitives, badges, loading/empty/error states
+src/client/lib/                   API clients, useWorkspace hook, workspaceApi mode (demo vs. production)
 ```

@@ -19,3 +19,11 @@ dist/
 *.local
 .DS_Store
 *.log
+
+# editor-local settings (personal, not project config)
+.vscode/
+
+# Playwright E2E output (see e2e/ + playwright.config.ts)
+/playwright-report/
+/test-results/
+/e2e/screenshots/

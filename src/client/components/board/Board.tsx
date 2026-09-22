@@ -2,12 +2,21 @@ import { useState } from "react";
 import { TASK_STATUSES, type Role, type Task, type TaskPriority, type TaskStatus } from "../../../shared/protocol";
 import type { WorkspaceActions } from "../../lib/useWorkspace";
 import { TaskEditor, type TaskDraft } from "./TaskEditor";
+import { badge, badgeTones, btn, cn, meta, metaXs, select } from "../../ui/primitives";
+import { PriorityBadge } from "../../ui/badges";
 
 const COLUMN_LABEL: Record<TaskStatus, string> = {
   TODO: "To do",
   IN_PROGRESS: "In progress",
   BLOCKED: "Blocked",
   DONE: "Done",
+};
+
+const COLUMN_ACCENT: Record<TaskStatus, string> = {
+  TODO: "bg-muted",
+  IN_PROGRESS: "bg-accent",
+  BLOCKED: "bg-danger",
+  DONE: "bg-success",
 };
 
 const DND_TYPE = "text/x-internpulse-task";
@@ -45,28 +54,24 @@ export function Board({
   };
 
   return (
-    <div className="board-wrap">
-      <div className="board-toolbar">
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
         {canCreate ? (
-          <button className="primary" onClick={() => setEditing("new")}>
+          <button className={btn("primary")} onClick={() => setEditing("new")}>
             + New task
           </button>
         ) : canPriorityOnly ? (
-          <span className="meta">You can change task priority but not rewrite the intern's task status.</span>
+          <span className={meta}>You can change task priority but not rewrite the intern's task status.</span>
         ) : (
-          <span className="meta">Your role can view the board but not change it.</span>
+          <span className={meta}>Your role can view the board but not change it.</span>
         )}
       </div>
 
-      {editing && (
-        <TaskEditor
-          task={editing === "new" ? null : editing}
-          onSave={save}
-          onClose={() => setEditing(null)}
-        />
-      )}
+      {editing && <TaskEditor task={editing === "new" ? null : editing} onSave={save} onClose={() => setEditing(null)} />}
 
-      <div className="board">
+      {/* Stacks vertically on narrow screens — no touch drag/drop implemented, so a
+          stacked list is the intended narrow-viewport experience, not a degraded board. */}
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:overflow-x-auto">
         {TASK_STATUSES.map((status) => (
           <Column
             key={status}
@@ -113,7 +118,10 @@ function Column({
 
   return (
     <section
-      className={`column${over ? " drag-over" : ""}`}
+      className={cn(
+        "flex min-w-0 flex-col gap-2 rounded-xl border border-border bg-surface-muted/40 p-2 md:w-72 md:shrink-0",
+        over && "border-accent bg-accent-muted/40",
+      )}
       onDragOver={(e) => {
         e.preventDefault();
         setOver(true);
@@ -125,11 +133,12 @@ function Column({
         if (id) onDropTask(id);
       }}
     >
-      <header>
+      <header className="flex items-center gap-2 px-1 py-0.5 text-sm font-semibold text-text">
+        <span className={cn("h-1.5 w-1.5 rounded-full", COLUMN_ACCENT[status])} />
         {COLUMN_LABEL[status]}
-        <span className="count">{tasks.length}</span>
+        <span className={cn(badge(badgeTones.neutral), "ml-auto")}>{tasks.length}</span>
       </header>
-      <div className="column-body">
+      <div className="flex flex-col gap-2">
         {tasks.map((task) => (
           <TaskCard
             key={task.id}
@@ -142,7 +151,7 @@ function Column({
             onPriority={onPriority}
           />
         ))}
-        {tasks.length === 0 && <p className="meta empty">—</p>}
+        {tasks.length === 0 && <p className={cn(meta, "px-1 py-2")}>—</p>}
       </div>
     </section>
   );
@@ -168,26 +177,33 @@ function TaskCard({
   const overdue = !!task.dueDate && task.dueDate < Date.now() && task.status !== "DONE";
   return (
     <article
-      className={`task-card${overdue ? " overdue" : ""}`}
+      className={cn(
+        "cursor-default rounded-lg border bg-surface p-3 text-sm shadow-sm transition-shadow hover:shadow-md",
+        overdue ? "border-l-4 border-l-danger border-y-border border-r-border" : "border-border",
+        canEdit && "cursor-grab active:cursor-grabbing",
+      )}
       draggable={canEdit}
       onDragStart={(e) => {
         e.dataTransfer.setData(DND_TYPE, task.id);
         e.dataTransfer.effectAllowed = "move";
       }}
     >
-      <div className="task-card-title">{task.title}</div>
-      {task.description && <div className="task-card-desc">{task.description}</div>}
-      <div className="task-card-foot">
-        {task.priority && <span className={`badge pri-${task.priority}`}>{task.priority}</span>}
+      <div className="flex items-start justify-between gap-2">
+        <span className="font-medium text-text">{task.title}</span>
+        <PriorityBadge priority={task.priority} />
+      </div>
+      {task.description && <div className={cn(meta, "mt-1 line-clamp-2")}>{task.description}</div>}
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {task.dueDate && (
-          <span className={`meta due${overdue ? " overdue-text" : ""}`}>
-            {overdue ? "overdue " : "due "}
+          <span className={cn("inline-flex items-center gap-1 text-xs font-medium", overdue ? "text-danger" : "text-muted")}>
+            {overdue ? "⚠ overdue " : "due "}
             {new Date(task.dueDate).toLocaleDateString()}
           </span>
         )}
-        {commentCount > 0 && <span className="meta">💬 {commentCount}</span>}
+        {commentCount > 0 && <span className={metaXs}>💬 {commentCount}</span>}
         {canPriorityOnly && (
           <select
+            className={cn(select, "h-7 w-auto py-0 text-xs")}
             value={task.priority ?? ""}
             onChange={(e) => e.target.value && onPriority(task.id, e.target.value as TaskPriority)}
           >
@@ -201,9 +217,13 @@ function TaskCard({
           </select>
         )}
         {canEdit && (
-          <span className="task-card-actions">
-            <button onClick={() => onEdit(task)}>edit</button>
-            <button onClick={() => onDelete(task.id)}>delete</button>
+          <span className="ml-auto flex gap-2 text-xs">
+            <button className="text-accent hover:underline" onClick={() => onEdit(task)}>
+              edit
+            </button>
+            <button className="text-danger hover:underline" onClick={() => onDelete(task.id)}>
+              delete
+            </button>
           </span>
         )}
       </div>

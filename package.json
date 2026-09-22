@@ -18,21 +18,30 @@
     "db:seed:remote": "wrangler d1 execute internpulse --remote --file=./seed/dev-seed.sql",
     "demo:seed": "node scripts/demo-seed.mjs",
     "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "load-test": "node scripts/load-test.mjs",
-    "test:prod-smoke": "node scripts/prod-smoke.mjs"
+    "test:prod-smoke": "node scripts/prod-smoke.mjs",
+    "test:qa-adversarial": "node scripts/qa-adversarial.mjs",
+    "test:qa-production-auth": "node scripts/qa-production-auth.mjs",
+    "test:qa-workflow-live": "node scripts/qa-workflow-live.mjs"
   },
   "dependencies": {
     "agents": "^0.22.0",
+    "jose": "^6.2.12",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.0.0",
     "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@playwright/test": "^1.63.0",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.4.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",
     "vitest": "^4.1.11",

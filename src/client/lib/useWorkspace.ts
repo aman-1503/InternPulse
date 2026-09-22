@@ -22,6 +22,7 @@ import {
   type WorkspaceSnapshot,
 } from "../../shared/protocol";
 import { WorkspaceSocket, type SocketStatus } from "./workspaceSocket";
+import type { WorkspaceMode } from "./workspaceApi";
 
 export interface WorkspaceState {
   status: SocketStatus;
@@ -168,8 +169,7 @@ export interface WorkspaceActions {
 
 export function useWorkspace(
   workspaceId: string,
-  identity: { userId: string; displayName: string },
-  devRole: string,
+  mode: WorkspaceMode,
 ): WorkspaceState & { actions: WorkspaceActions } {
   const [state, dispatch] = useReducer(reducer, initialState);
   const socketRef = useRef<WorkspaceSocket | null>(null);
@@ -177,16 +177,14 @@ export function useWorkspace(
   useEffect(() => {
     const socket = new WorkspaceSocket({
       workspaceId,
-      userId: identity.userId,
-      displayName: identity.displayName,
-      devRole,
+      mode,
       onMessage: (msg) => dispatch({ kind: "msg", msg }),
       onStatusChange: (status) => dispatch({ kind: "status", status }),
     });
     socketRef.current = socket;
     socket.connect();
     return () => socket.close();
-    // Identity/role changes remount this hook via `key` on <Workspace/>.
+    // Identity/role changes remount this hook via `key` on the workspace view.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
 

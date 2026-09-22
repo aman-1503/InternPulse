@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { OverviewResponse, OverviewRow, Role } from "../../shared/protocol";
 import { timeAgo } from "../lib/format";
+import { btn, card, cn, input, meta, row } from "../ui/primitives";
+import { Banner } from "../ui/states";
 
 interface PersonDraft {
   displayName: string;
@@ -34,12 +36,8 @@ function NewWorkspaceForm({
     setBusy(true);
     setError(null);
     try {
-      const qs = new URLSearchParams({
-        userId: identity.userId,
-        displayName: identity.displayName,
-        devRole,
-      });
-      const res = await fetch(`/api/workspaces?${qs}`, {
+      const qs = new URLSearchParams({ userId: identity.userId, displayName: identity.displayName, devRole });
+      const res = await fetch(`/api/demo/workspaces?${qs}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: name.trim(), intern, mentor, manager }),
@@ -63,42 +61,41 @@ function NewWorkspaceForm({
 
   if (!open) {
     return (
-      <button className="primary" onClick={() => setOpen(true)}>
+      <button className={btn("primary")} onClick={() => setOpen(true)}>
         + New workspace
       </button>
     );
   }
 
   return (
-    <div className="card new-workspace-form">
-      <h3>New workspace</h3>
-      {error && <div className="banner error">{error}</div>}
-      <label>Project / workspace name</label>
-      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Q3 Data Pipeline" />
+    <div className={cn(card, "flex flex-col gap-2")}>
+      <h3 className="text-sm font-semibold text-text">New workspace</h3>
+      {error && <Banner tone="danger">{error}</Banner>}
+      <label className="text-sm font-medium">Project / workspace name</label>
+      <input className={input} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Q3 Data Pipeline" />
       {(["intern", "mentor", "manager"] as const).map((role) => {
         const draft = role === "intern" ? intern : role === "mentor" ? mentor : manager;
         const setDraft = role === "intern" ? setIntern : role === "mentor" ? setMentor : setManager;
         return (
-          <div className="row" key={role}>
-            <div>
-              <label>{role[0].toUpperCase() + role.slice(1)} name</label>
-              <input
-                value={draft.displayName}
-                onChange={(e) => setDraft({ ...draft, displayName: e.target.value })}
-              />
+          <div className={row} key={role}>
+            <div className="flex-1">
+              <label className="text-sm font-medium">{role[0].toUpperCase() + role.slice(1)} name</label>
+              <input className={input} value={draft.displayName} onChange={(e) => setDraft({ ...draft, displayName: e.target.value })} />
             </div>
-            <div>
-              <label>{role[0].toUpperCase() + role.slice(1)} email</label>
-              <input value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} />
+            <div className="flex-1">
+              <label className="text-sm font-medium">{role[0].toUpperCase() + role.slice(1)} email</label>
+              <input className={input} value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} />
             </div>
           </div>
         );
       })}
-      <div className="row editor-actions">
-        <button className="primary" disabled={!ready || busy} onClick={submit}>
+      <div className={row}>
+        <button className={btn("primary")} disabled={!ready || busy} onClick={submit}>
           {busy ? "Creating…" : "Create workspace"}
         </button>
-        <button onClick={() => setOpen(false)}>Cancel</button>
+        <button className={btn("default")} onClick={() => setOpen(false)}>
+          Cancel
+        </button>
       </div>
     </div>
   );
@@ -122,7 +119,7 @@ export function ManagerOverview({
     let live = true;
     setData(null);
     setError(null);
-    fetch(`/api/overview?userId=${encodeURIComponent(identity.userId)}`)
+    fetch(`/api/demo/overview?userId=${encodeURIComponent(identity.userId)}`)
       .then((r) => r.json() as Promise<OverviewResponse>)
       .then((d) => live && setData(d))
       .catch(() => live && setError("Failed to load overview"));
@@ -132,34 +129,27 @@ export function ManagerOverview({
   }, [identity.userId, refreshKey]);
 
   return (
-    <div className="overview">
-      <div className="workspace-head">
+    <div className="flex flex-col gap-4 p-4 md:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2>Manager overview</h2>
-          <p className="meta">
-            Workspaces roll up live counts pulled from each workspace's Durable Object — no
-            workspace data is copied into D1.
-          </p>
+          <h2 className="text-lg font-semibold text-text">Manager overview</h2>
+          <p className={meta}>Workspaces roll up live counts pulled from each workspace's Durable Object.</p>
         </div>
         {(canCreateWorkspace === "mentor" || canCreateWorkspace === "manager") && (
           <NewWorkspaceForm identity={identity} devRole={devRole} onCreated={() => setRefreshKey((k) => k + 1)} />
         )}
       </div>
 
-      {error && <div className="banner error">{error}</div>}
-      {data?.demoFallback && (
-        <div className="banner">
-          Showing all workspaces (current demo identity has no manager membership).
-        </div>
-      )}
-      {!data && !error && <p className="meta">Loading…</p>}
+      {error && <Banner tone="danger">{error}</Banner>}
+      {data?.demoFallback && <Banner>Showing all workspaces (current demo identity has no manager membership).</Banner>}
+      {!data && !error && <p className={meta}>Loading…</p>}
 
-      <div className="card-grid">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {data?.workspaces.map((w) => (
           <WorkspaceCard key={w.id} row={w} onOpen={() => onOpenWorkspace(w.id)} />
         ))}
         {data && data.workspaces.length === 0 && (
-          <p className="meta">
+          <p className={meta}>
             No workspaces. Run <code>npm run db:seed:local</code>.
           </p>
         )}
@@ -170,34 +160,34 @@ export function ManagerOverview({
 
 function WorkspaceCard({ row, onOpen }: { row: OverviewRow; onOpen: () => void }) {
   return (
-    <button className="card ws-card" onClick={onOpen}>
-      <div className="ws-card-head">
-        <strong>{row.name}</strong>
-        <span className="meta">{row.slug}</span>
+    <button className={cn(card, "flex flex-col gap-1.5 text-left hover:border-accent")} onClick={onOpen}>
+      <div className="flex items-baseline justify-between">
+        <strong className="text-text">{row.name}</strong>
+        <span className={meta}>{row.slug}</span>
       </div>
-      <div className="ws-card-stats">
+      <div className="flex gap-3 text-sm">
         <span>
           <b>{row.activeTasks}</b> active tasks
         </span>
-        <span className={row.openBlockers > 0 ? "danger" : ""}>
+        <span className={row.openBlockers > 0 ? "text-danger" : ""}>
           <b>{row.openBlockers}</b> open blockers
         </span>
       </div>
-      <div className="meta">Intern: {row.intern ? row.intern.displayName : "—"}</div>
-      <div className="ws-card-update">
+      <div className={meta}>Intern: {row.intern ? row.intern.displayName : "—"}</div>
+      <div className="text-sm">
         {row.latestUpdate ? (
           <>
-            “{row.latestUpdate.content}”
-            <span className="meta">
+            "{row.latestUpdate.content}"
+            <span className={meta}>
               {" "}
               — {row.latestUpdate.authorName}, {timeAgo(row.latestUpdate.createdAt)}
             </span>
           </>
         ) : (
-          <span className="meta">No updates yet</span>
+          <span className={meta}>No updates yet</span>
         )}
       </div>
-      <div className="ws-card-open">Open workspace →</div>
+      <div className="text-sm font-medium text-accent">Open workspace →</div>
     </button>
   );
 }

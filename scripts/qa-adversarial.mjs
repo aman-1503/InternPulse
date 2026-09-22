@@ -38,7 +38,7 @@ function check(label, ok, detail) {
  */
 function connect(workspace, userId, displayName, devRole) {
   return new Promise((resolve) => {
-    const url = `${WS_BASE}/api/workspace/${workspace}/ws?userId=${encodeURIComponent(userId)}&displayName=${encodeURIComponent(displayName)}${devRole ? `&devRole=${devRole}` : ""}`;
+    const url = `${WS_BASE}/api/demo/workspace/${workspace}/ws?userId=${encodeURIComponent(userId)}&displayName=${encodeURIComponent(displayName)}${devRole ? `&devRole=${devRole}` : ""}`;
     const ws = new WebSocket(url);
     ws.inbox = [];
     ws.opened = false;
@@ -97,7 +97,7 @@ async function authMatrix() {
   );
 
   const strangerHttpSnap = await httpJson(
-    `/api/workspace/demo/snapshot?userId=u-stranger-1&displayName=Stranger&devRole=intern`,
+    `/api/demo/workspace/demo/snapshot?userId=u-stranger-1&displayName=Stranger&devRole=intern`,
   );
   check(
     "unmapped identity's HTTP snapshot read is REJECTED (403), not served read-only",
@@ -169,18 +169,18 @@ async function authMatrix() {
   paymentsIntern.close();
 
   // Malformed / direct API abuse.
-  const badJson = await httpJson("/api/workspace/demo/weekly", {
+  const badJson = await httpJson("/api/demo/workspace/demo/weekly", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "{not json",
   });
   check("malformed JSON body doesn't 500", badJson.status < 500, `status=${badJson.status}`);
 
-  const badWorkspace = await httpJson("/api/workspace/../../etc/passwd/snapshot");
+  const badWorkspace = await httpJson("/api/demo/workspace/../../etc/passwd/snapshot");
   check("path-traversal-shaped workspace id is rejected, not 500", badWorkspace.status === 400 || badWorkspace.status === 404, `status=${badWorkspace.status}`);
 
   const sqlInjectionAttempt = await httpJson(
-    `/api/workspace/${encodeURIComponent("demo' OR '1'='1")}/snapshot`,
+    `/api/demo/workspace/${encodeURIComponent("demo' OR '1'='1")}/snapshot`,
   );
   check("SQL-injection-shaped workspace id is rejected cleanly", sqlInjectionAttempt.status === 400, `status=${sqlInjectionAttempt.status}`);
 
@@ -203,11 +203,11 @@ async function leakTest() {
   await wait(500);
 
   // HTTP snapshot isolation.
-  const snapB = await httpJson(`/api/workspace/rahul-ml/snapshot?userId=u-rahul&displayName=Rahul&devRole=intern`);
+  const snapB = await httpJson(`/api/demo/workspace/rahul-ml/snapshot?userId=u-rahul&displayName=Rahul&devRole=intern`);
   const leakedInB = JSON.stringify(snapB.body).includes(SECRET_A);
   check("workspace B's snapshot never contains workspace A's secret", !leakedInB);
 
-  const snapA = await httpJson(`/api/workspace/demo/snapshot?userId=u-alice&displayName=Alice&devRole=intern`);
+  const snapA = await httpJson(`/api/demo/workspace/demo/snapshot?userId=u-alice&displayName=Alice&devRole=intern`);
   const leakedInA = JSON.stringify(snapA.body).includes(SECRET_B);
   check("workspace A's snapshot never contains workspace B's secret", !leakedInA);
 
@@ -223,7 +223,7 @@ async function leakTest() {
   );
 
   const rahulHttpSnapOnA = await httpJson(
-    `/api/workspace/demo/snapshot?userId=u-rahul&displayName=Rahul&devRole=intern`,
+    `/api/demo/workspace/demo/snapshot?userId=u-rahul&displayName=Rahul&devRole=intern`,
   );
   check(
     "...and the HTTP snapshot route rejects him the same way (403, no body content)",
@@ -233,7 +233,7 @@ async function leakTest() {
 
   // Agent: ask workspace B's agent about workspace A's secret phrase.
   const agentRes = await httpJson(
-    `/api/workspace/rahul-ml/agent?userId=u-rahul&displayName=Rahul&devRole=intern`,
+    `/api/demo/workspace/rahul-ml/agent?userId=u-rahul&displayName=Rahul&devRole=intern`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -268,8 +268,8 @@ async function concurrencyTests() {
   send(mia, { type: "task.priority", id: taskId, priority: "HIGH" });
   await wait(400);
 
-  const snapA1 = await httpJson(`/api/workspace/demo/snapshot?userId=u-alice&displayName=Alice&devRole=intern`);
-  const snapA2 = await httpJson(`/api/workspace/demo/snapshot?userId=u-mia&displayName=Mia&devRole=mentor`);
+  const snapA1 = await httpJson(`/api/demo/workspace/demo/snapshot?userId=u-alice&displayName=Alice&devRole=intern`);
+  const snapA2 = await httpJson(`/api/demo/workspace/demo/snapshot?userId=u-mia&displayName=Mia&devRole=mentor`);
   const finalA1 = snapA1.body.tasks.find((x) => x.id === taskId);
   const finalA2 = snapA2.body.tasks.find((x) => x.id === taskId);
   check(
@@ -291,7 +291,7 @@ async function concurrencyTests() {
   send(jordan, { type: "blocker.resolve", id: blockerId, note: "manager also resolved" });
   await wait(300);
 
-  const snapFinal = await httpJson(`/api/workspace/demo/snapshot?userId=u-alice&displayName=Alice&devRole=intern`);
+  const snapFinal = await httpJson(`/api/demo/workspace/demo/snapshot?userId=u-alice&displayName=Alice&devRole=intern`);
   const finalBlocker = snapFinal.body.blockers.find((x) => x.id === blockerId);
   check(
     "Case C/D: request-resolution + double-resolve converge to exactly one RESOLVED state (first writer wins, second is a no-op)",
@@ -308,7 +308,7 @@ async function concurrencyTests() {
   alice.send(JSON.stringify({ type: "update.create", requestId: dupRid, content: dupContent, updateType: "GENERAL" }));
   await wait(400);
   const acks = alice.inbox.filter((m) => m.type === "ack" && m.requestId === dupRid);
-  const snapDup = await httpJson(`/api/workspace/demo/snapshot?userId=u-alice&displayName=Alice&devRole=intern`);
+  const snapDup = await httpJson(`/api/demo/workspace/demo/snapshot?userId=u-alice&displayName=Alice&devRole=intern`);
   const dupCount = snapDup.body.updates.filter((u) => u.content === dupContent).length;
   check(
     "Case I: identical requestId submitted twice rapidly is applied exactly once",
@@ -383,7 +383,7 @@ console.log(`\n[AGENT] grounding / false-premise resistance`);
 // ---------------------------------------------------------------------------
 async function agentTests() {
   const ask = (prompt) =>
-    httpJson(`/api/workspace/demo/agent?userId=u-alice&displayName=Alice&devRole=intern`, {
+    httpJson(`/api/demo/workspace/demo/agent?userId=u-alice&displayName=Alice&devRole=intern`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ prompt }),

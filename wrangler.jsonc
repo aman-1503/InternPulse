@@ -15,6 +15,16 @@
   "ai": { "binding": "AI" },
 
   "vars": {
+    // ACCESS_TEAM_DOMAIN, ACCESS_AUD, and ADMIN_EMAILS are set as remote
+    // Worker secrets (`wrangler secret put <name>`), not here — a key present
+    // in both `vars` and as a secret makes Wrangler overwrite the secret with
+    // the (blank) var on every deploy. Locally, they still come from
+    // .dev.vars (gitignored) — see README "Cloudflare Access setup". Leaving
+    // them unset makes every non-demo route fail closed with 401 (see
+    // access-auth.ts) rather than silently trusting requests.
+    // Set to "off" to disable the /api/demo/* sandbox entirely (e.g. in a
+    // deployment that should never expose sample data).
+    "DEMO_MODE": "on",
     // Overridable Workers AI model id for the Progress Agent.
     "PROGRESS_AGENT_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
     // "1" => skip real inference AND skip RAG (Vectorize). The agent returns a

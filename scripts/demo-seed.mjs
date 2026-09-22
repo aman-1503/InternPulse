@@ -24,7 +24,7 @@ const daysFromNow = (n) => Date.now() + n * 86_400_000;
 
 function connect(workspace, userId, displayName, devRole) {
   return new Promise((resolve, reject) => {
-    const url = `${WS_BASE}/api/workspace/${workspace}/ws?userId=${userId}&displayName=${encodeURIComponent(
+    const url = `${WS_BASE}/api/demo/workspace/${workspace}/ws?userId=${userId}&displayName=${encodeURIComponent(
       displayName,
     )}&devRole=${devRole}`;
     const ws = new WebSocket(url);
@@ -40,7 +40,7 @@ const send = (ws, msg) => ws.send(JSON.stringify({ requestId: rid(), ...msg }));
 
 async function weeklyHttp(workspace, path, who, init = {}) {
   const qs = `userId=${who.id}&displayName=${encodeURIComponent(who.name)}&devRole=${who.role}`;
-  const res = await fetch(`${BASE}/api/workspace/${workspace}/weekly${path}?${qs}`, {
+  const res = await fetch(`${BASE}/api/demo/workspace/${workspace}/weekly${path}?${qs}`, {
     headers: { "content-type": "application/json" },
     ...init,
   });
@@ -254,7 +254,7 @@ async function main() {
         const form = new FormData();
         form.append("file", new File([cfg.document.content], cfg.document.filename, { type: "text/markdown" }));
         const res = await fetch(
-          `${BASE}/api/workspace/${cfg.workspace}/attachments?userId=${cfg.intern.id}&displayName=${encodeURIComponent(cfg.intern.name)}&devRole=intern`,
+          `${BASE}/api/demo/workspace/${cfg.workspace}/attachments?userId=${cfg.intern.id}&displayName=${encodeURIComponent(cfg.intern.name)}&devRole=intern`,
           { method: "POST", body: form },
         );
         if (res.ok) console.log(`  1 attachment (${cfg.document.filename}) — will index in ~30-60s`);
